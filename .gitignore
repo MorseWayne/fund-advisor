@@ -1,1 +1,69 @@
-.superpowers/\n*.db\n__pycache__/\n.env\nvenv/\n.venv/
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- Pytest / Coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# --- Virtual Environments ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Environment / Secrets ---
+.env
+.env.local
+.env.*.local
+
+# --- Project: Database & Logs ---
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.log
+data/logs/
+data/*.db
+
+# --- Project: Config (local overrides) ---
+config/config.local.yaml
+portfolio.local.yaml
+
+# --- Streamlit ---
+.streamlit/secrets.toml
+
+# --- uv (optional: uncomment if you don't want to lock file in repo) ---
+# uv.lock
+
+# --- Project Specific ---
+.superpowers/

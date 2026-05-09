@@ -1,0 +1,109 @@
+# 基金ETF投资建议系统 - 配置文件
+
+# ---------------------------------------------------------------------------
+# 数据采集配置
+# ---------------------------------------------------------------------------
+data:
+  # A股收盘时间 (北京时间)
+  a_share_close_time: "15:30"
+  # 美股数据采集时间 (北京时间次日早上)
+  us_market_fetch_time: "08:00"
+
+  # 数据源配置
+  sources:
+    akshare:
+      enabled: true
+      rate_limit_seconds: 1.0     # API调用间隔(秒)
+      cache_ttl_minutes: 10       # 全市场行情缓存时间
+
+    yfinance:
+      enabled: true
+      rate_limit_seconds: 0.5
+
+  # 存储配置
+  storage:
+    type: sqlite
+    path: data/fund_advisor.db    # SQLite数据库文件路径
+
+# ---------------------------------------------------------------------------
+# 分析引擎配置
+# ---------------------------------------------------------------------------
+analysis:
+  # 趋势跟踪
+  trend:
+    ma_periods: [5, 20, 60]      # 均线周期(日)
+    standing_line_threshold: 0.5  # 站线比例阈值(50%以上=市场偏强)
+
+  # 行业轮动
+  rotation:
+    momentum_windows: [21, 63, 126]  # 近1月/3月/6月(交易日)
+
+  # 估值判断
+  valuation:
+    pe_percentile_low: 30        # PE分位低于30%=便宜
+    pe_percentile_high: 70       # PE分位高于70%=贵
+    bond_yield_comparison: true  # 启用股债性价比
+
+  # 风险监控
+  risk:
+    anomaly_threshold: 0.03      # 单日涨跌超3%=异常
+    max_drawdown_warning: 0.15   # 回撤超15%=预警
+    correlation_warning: 0.80    # 持仓相关性>0.8=分散化失效
+
+# ---------------------------------------------------------------------------
+# LLM配置
+# ---------------------------------------------------------------------------
+llm:
+  provider: deepseek             # deepseek / openai / ollama
+  model: deepseek-chat
+  api_key_env: DEEPSEEK_API_KEY  # 从环境变量读取
+  base_url: https://api.deepseek.com/v1
+  temperature: 0.7
+  max_tokens: 2048
+
+  # 日报生成
+  report:
+    max_length_chars: 800        # 日报最大长度(字符)
+    tone: "专业简洁"             # 写作风格
+
+# ---------------------------------------------------------------------------
+# 调度配置
+# ---------------------------------------------------------------------------
+scheduler:
+  timezone: Asia/Shanghai
+
+  jobs:
+    # 每日盘后完整采集
+    daily_collection:
+      cron: "0 30 15 * * mon-fri"  # 交易日15:30
+      enabled: true
+
+    # 交易时段异常检测
+    intraday_monitor:
+      interval_minutes: 5
+      enabled: true
+      start_time: "09:30"
+      end_time: "15:00"
+
+# ---------------------------------------------------------------------------
+# 消息推送配置
+# ---------------------------------------------------------------------------
+notify:
+  # 企业微信机器人 Webhook
+  wechat_work:
+    enabled: false
+    webhook_url_env: WECHAT_WORK_WEBHOOK_URL
+
+  # 飞书机器人 Webhook
+  feishu:
+    enabled: false
+    webhook_url_env: FEISHU_WEBHOOK_URL
+
+# ---------------------------------------------------------------------------
+# 日志配置
+# ---------------------------------------------------------------------------
+logging:
+  level: INFO
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} | {message}"
+  rotation: "10 MB"
+  retention: "30 days"

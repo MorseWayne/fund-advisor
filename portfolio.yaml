@@ -1,0 +1,57 @@
+# 持仓配置文件
+# 系统读取此文件，在日报"你的持仓"部分计算当日涨跌和盈亏
+
+holdings:
+  - code: "510300"
+    name: "沪深300ETF"
+    market: "a_share"
+    cost_basis: 3.85
+    shares: 5000
+    category: "broad"
+    notes: "定投标的，每月10号定投"
+
+  - code: "588000"
+    name: "科创50ETF"
+    market: "a_share"
+    cost_basis: 0.82
+    shares: 10000
+    category: "theme"
+    notes: "科技创新方向"
+
+  - code: "159915"
+    name: "创业板ETF"
+    market: "a_share"
+    cost_basis: 1.95
+    shares: 3000
+    category: "broad"
+
+  - code: "513100"
+    name: "纳指100ETF"
+    market: "a_share"
+    cost_basis: 1.45
+    shares: 5000
+    category: "overseas"
+    notes: "QDII跟踪纳斯达克100"
+
+  - code: "QQQ"
+    name: "纳指100ETF(美股)"
+    market: "us"
+    cost_basis: 420.0
+    shares: 50
+    category: "overseas"
+    notes: "美股账户"
+
+  - code: "SPY"
+    name: "标普500ETF"
+    market: "us"
+    cost_basis: 520.0
+    shares: 30
+    category: "overseas"
+
+  - code: "511880"
+    name: "银华日利ETF"
+    market: "a_share"
+    cost_basis: 100.0
+    shares: 1000
+    category: "bond"
+    notes: "货币ETF，现金管理工具"
