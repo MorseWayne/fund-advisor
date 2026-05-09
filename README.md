@@ -10,69 +10,54 @@
 
 ## 系统架构
 
+![系统架构图](docs/architecture.png)
+
+> 交互式架构图（可缩放）: [`docs/architecture.html`](docs/architecture.html)
+
 ```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#0e4429', 'primaryTextColor': '#3fb950', 'primaryBorderColor': '#238636', 'lineColor': '#8b949e', 'secondaryColor': '#161b22', 'tertiaryColor': '#21262d'}}}%%
 flowchart TB
-    direction TB
-
-    %% ===== Layer 5: 交付层 (Presentation) =====
-    subgraph L5["交付层 Presentation"]
+    subgraph Presentation["🖥️ 交付层"]
         direction LR
-        WX["企业微信"]
-        FS["飞书"]
-        ST["Streamlit看板"]
-        SC["APScheduler"]
+        WX["企业微信"]:::deliver
+        FS["飞书"]:::deliver
+        ST["Streamlit"]:::deliver
     end
 
-    %% ===== Layer 4: LLM层 (Intelligence) =====
-    subgraph L4["LLM层 Intelligence"]
-        direction LR
-        API["DeepSeek API"]
-        RP["ReportGenerator"]
-        FB["Fallback引擎"]
+    subgraph Intelligence["🧠 LLM层"]
+        RP["DeepSeek<br/>日报生成"]:::llm
     end
 
-    %% ===== Layer 3: 分析层 (Analysis) =====
-    subgraph L3["分析层 Analysis"]
+    subgraph Analysis["📊 分析层"]
         direction LR
-        TR["趋势分析"]
-        RO["轮动分析"]
-        VA["估值分析"]
-        RS["风险监控"]
+        T["趋势"]:::analysis
+        R["轮动"]:::analysis
+        V["估值"]:::analysis
+        RS["风险"]:::analysis
     end
 
-    %% ===== Layer 2: 存储层 (Storage) =====
-    subgraph L2["存储层 Storage"]
-        direction LR
-        DB[("SQLite<br/>11表 WAL模式")]
+    subgraph Storage["💾 存储层"]
+        DB[("SQLite")]:::storage
     end
 
-    %% ===== Layer 1: 采集层 (Collection) =====
-    subgraph L1["采集层 Collection"]
+    subgraph Collection["📡 采集层"]
         direction LR
-        DP["DataPipeline"]
-        BP["BackfillPipeline"]
-        RT["Retry机制"]
-        VL["Validation"]
+        AK["AKShare"]:::collect
+        YF["yfinance"]:::collect
     end
 
-    %% ===== Layer 0: 数据源 (Data Source) =====
-    subgraph L0["数据源 Data Source"]
-        direction LR
-        AK["AKShare<br/>A股数据"]
-        YF["yfinance<br/>全球数据"]
-    end
+    Collection -->|写入| Storage
+    Storage -->|查询| Analysis
+    Analysis -->|信号| Intelligence
+    Intelligence -->|推送| Presentation
+    Storage -.->|直连| ST
 
-    %% ===== 垂直数据流 =====
-    L5 --> |"触发"| L1
-    L0 --> |"采集"| L1
-    L1 --> |"写入"| L2
-    L2 --> |"查询"| L3
-    L3 --> |"信号"| L4
-    L4 --> |"推送"| L5
-    L2 --> |"直连"| ST
+    classDef deliver fill:#051e1e,stroke:#22d3ee,color:#22d3ee
+    classDef llm fill:#052e1e,stroke:#34d399,color:#34d399
+    classDef analysis fill:#052e1e,stroke:#34d399,color:#34d399
+    classDef storage fill:#1e1b4b,stroke:#a78bfa,color:#a78bfa
+    classDef collect fill:#1c1917,stroke:#fbbf24,color:#fbbf24
 ```
-
-> 更详细的交互式架构图: [`docs/architecture.html`](docs/architecture.html)
 
 ---
 
