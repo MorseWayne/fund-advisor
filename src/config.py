@@ -58,6 +58,7 @@ class LLMConfig(BaseModel):
     base_url: str = "https://api.openai.com/v1"
     temperature: float = 0.7
     max_tokens: int = 4096
+    timeout_seconds: float = 180.0
     report: LLMReportConfig = LLMReportConfig()
 
 
@@ -131,6 +132,7 @@ def _apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         "base_url": os.getenv("LLM_BASE_URL"),
         "temperature": os.getenv("LLM_TEMPERATURE"),
         "max_tokens": os.getenv("LLM_MAX_TOKENS"),
+        "timeout_seconds": os.getenv("LLM_TIMEOUT_SECONDS"),
     }
     for key, value in env_map.items():
         if value not in (None, ""):

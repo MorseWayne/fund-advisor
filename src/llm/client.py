@@ -28,6 +28,7 @@ class LLMClient:
         base_url: str = "https://api.openai.com/v1",
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        timeout_seconds: float = 180.0,
     ) -> None:
         self.provider: str = provider
         self.model: str = model
@@ -35,6 +36,7 @@ class LLMClient:
         self.base_url: str = base_url.rstrip("/")
         self.temperature: float = temperature
         self.max_tokens: int = max_tokens
+        self.timeout_seconds: float = timeout_seconds
 
     @classmethod
     def from_config(cls, config: object, *, api_key: str | None = None) -> "LLMClient":
@@ -47,6 +49,7 @@ class LLMClient:
             base_url=str(getattr(config, "base_url", "https://api.openai.com/v1")),
             temperature=float(getattr(config, "temperature", 0.7)),
             max_tokens=int(getattr(config, "max_tokens", 4096)),
+            timeout_seconds=float(getattr(config, "timeout_seconds", 180.0)),
         )
 
     async def generate(
@@ -88,7 +91,7 @@ class LLMClient:
 
         max_attempts = 3
         last_error: Exception | None = None
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             for attempt in range(1, max_attempts + 1):
                 try:
                     logger.info(
@@ -108,6 +111,9 @@ class LLMClient:
                     content = self._extract_content(response_json)
                     logger.info("LLM generation completed, chars={}", len(content))
                     return content
+                except httpx.TimeoutException as exc:
+                    last_error = exc
+                    await self._retry_request_error(exc, attempt, max_attempts)
                 except httpx.HTTPStatusError as exc:
                     last_error = exc
                     logger.exception(
@@ -118,7 +124,10 @@ class LLMClient:
                         max_attempts,
                     )
                     raise LLMClientError(f"LLM request failed: {exc.response.text}") from exc
-                except (httpx.RequestError, ValueError, KeyError, TypeError) as exc:
+                except httpx.RequestError as exc:
+                    last_error = exc
+                    await self._retry_request_error(exc, attempt, max_attempts)
+                except (ValueError, KeyError, TypeError) as exc:
                     last_error = exc
                     logger.exception(
                         "LLM request/parsing error provider={} attempt={}/{}",
@@ -131,6 +140,33 @@ class LLMClient:
         message = f"LLM request failed after {max_attempts} attempts"
         logger.error(message)
         raise LLMClientError(message) from last_error
+
+    async def _retry_request_error(
+        self,
+        exc: httpx.RequestError,
+        attempt: int,
+        max_attempts: int,
+    ) -> None:
+        if attempt >= max_attempts:
+            logger.exception(
+                "LLM request error exhausted provider={} error_type={} attempt={}/{}",
+                self.provider,
+                type(exc).__name__,
+                attempt,
+                max_attempts,
+            )
+            raise LLMClientError(f"LLM request failed after {max_attempts} attempts: {type(exc).__name__}") from exc
+
+        delay = 2.0 ** (attempt - 1)
+        logger.warning(
+            "LLM request error provider={} error_type={} attempt={}/{} delay={}s",
+            self.provider,
+            type(exc).__name__,
+            attempt,
+            max_attempts,
+            delay,
+        )
+        await asyncio.sleep(delay)
 
     def _build_payload(
         self,

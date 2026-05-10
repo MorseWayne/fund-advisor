@@ -23,6 +23,8 @@ def test_build_prompt_uses_weekly_report_language():
 @pytest.mark.asyncio
 async def test_fallback_report_uses_period_label_and_neutral_portfolio_wording():
     class FailingLLM:
+        max_tokens = 4096
+
         async def generate(self, *args, **kwargs):
             raise RuntimeError("offline")
 

@@ -11,6 +11,7 @@ def test_load_config_loads_llm_connection_from_dotenv(tmp_path, monkeypatch):
         "LLM_BASE_URL",
         "LLM_TEMPERATURE",
         "LLM_MAX_TOKENS",
+        "LLM_TIMEOUT_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
     (tmp_path / "config.yaml").write_text(
@@ -31,6 +32,7 @@ llm:
                 "LLM_BASE_URL=https://dotenv.example.com/v1",
                 "LLM_TEMPERATURE=0.2",
                 "LLM_MAX_TOKENS=1024",
+                "LLM_TIMEOUT_SECONDS=240",
             ]
         ),
         encoding="utf-8",
@@ -44,7 +46,9 @@ llm:
     assert config.llm.base_url == "https://dotenv.example.com/v1"
     assert config.llm.temperature == 0.2
     assert config.llm.max_tokens == 1024
+    assert config.llm.timeout_seconds == 240
     assert client.api_key == "from-dotenv"
+    assert client.timeout_seconds == 240
 
 
 def test_dotenv_does_not_override_exported_llm_environment(tmp_path, monkeypatch):

@@ -11,6 +11,7 @@ from src.llm.report_period import (
     report_period_scope,
     select_report_period,
 )
+from src.reporting.evidence import build_report_evidence
 
 
 REPORT_SYSTEM_PROMPT_TEMPLATE = """你是个人基金ETF投资建议系统的{report_label}撰写助手，面向基金/ETF个人投资者输出中文{report_label}。
@@ -29,7 +30,10 @@ REPORT_SYSTEM_PROMPT_TEMPLATE = """你是个人基金ETF投资建议系统的{re
 - 给出具体标的代码和操作建议，不模糊。
 - {report_label}总长度控制在手机一屏以内，约300-600字。
 - 不使用生活化比喻，保持专业简洁。
-- 只基于用户提供的数据生成，不编造缺失数据；缺失时明确写“暂无数据”。"""
+- 只基于证据包生成，不编造缺失数据；缺失时明确写“暂无数据”。
+- 报告中的百分比、收益、分位数等数字必须来自证据包 metrics 或 sections。
+- 必须处理 evidence.challenge_review.must_address 和 action_boundaries 中的限制。
+- 不使用“稳赚、必涨、保证收益、无风险、满仓买入”等绝对化投资表述。"""
 
 
 def build_daily_report_prompt(
@@ -51,21 +55,17 @@ def build_daily_report_prompt(
     period = normalize_report_period(report_period) if report_period is not None else select_report_period(result.get("date"))
     label = report_period_label(period)
     scope = report_period_scope(period)
+    evidence = build_report_evidence(result, report_period=period)
     system_prompt = REPORT_SYSTEM_PROMPT_TEMPLATE.format(report_label=label, scope=scope)
     report_input: dict[str, object] = {
         "date": result.get("date"),
         "report_period": period,
         "report_label": label,
         "report_scope": scope,
-        "overview": result.get("overview") if result.get("overview") is not None else {},
-        "trend": result.get("trend") if result.get("trend") is not None else {},
-        "sector_opportunities": result.get("sector_opportunities") if result.get("sector_opportunities") is not None else [],
-        "valuation": result.get("valuation") if result.get("valuation") is not None else {},
-        "risk_alerts": result.get("risk_alerts") if result.get("risk_alerts") is not None else [],
-        "portfolio_status": result.get("portfolio_status") if result.get("portfolio_status") is not None else {},
+        "evidence": evidence.to_prompt_payload(),
     }
 
-    user_prompt = f"""请根据以下分析结果生成一份基金/ETF投资{label}。
+    user_prompt = f"""请根据以下证据包生成一份基金/ETF投资{label}。
 
 输出要求：
 1. 必须按“📊 日期 投资{label}”开头，并使用“一、{scope}概览”到“六、你的持仓”六个标题。
@@ -73,9 +73,11 @@ def build_daily_report_prompt(
 3. 板块机会必须尽量给出ETF代码和名称；数据缺失时写“暂无明确机会”。
 4. 风险提醒必须说明触发信号和需要采取的动作；无风险时写“暂无新增风险”。
 5. 如果没有历史聚合数据，持仓收益使用当前收益和最新涨跌，不编造{scope}累计收益。
-6. 全文控制在300-600字，专业、简洁、不要免责声明。
+6. 优先按照 evidence.section_briefs 中每个章节的 objective、conclusion_hint、evidence_keys 写作。
+7. 写作前先吸收 evidence.challenge_review 的反方审查：有风险或缺失数据时语气更谨慎。
+8. 全文控制在300-600字，专业、简洁、不要免责声明。
 
-分析结果JSON：
+证据包JSON：
 ```json
 {json.dumps(report_input, ensure_ascii=False, indent=2, default=str)}
 ```

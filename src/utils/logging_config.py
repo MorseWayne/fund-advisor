@@ -10,6 +10,8 @@ def setup_logging(level: str = "INFO", log_format: str = "{time:YYYY-MM-DD HH:mm
         format=log_format,
         level=level,
         colorize=True,
+        backtrace=False,
+        diagnose=False,
     )
     logger.add(
         "data/logs/fund_advisor_{time:YYYY-MM-DD}.log",
@@ -18,5 +20,7 @@ def setup_logging(level: str = "INFO", log_format: str = "{time:YYYY-MM-DD HH:mm
         rotation=rotation,
         retention=retention,
         encoding="utf-8",
+        backtrace=False,
+        diagnose=False,
     )
     logger.info("Logging configured")

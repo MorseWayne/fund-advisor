@@ -106,6 +106,7 @@ LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=sk-xxx
 LLM_TEMPERATURE=0.7
 LLM_MAX_TOKENS=4096
+LLM_TIMEOUT_SECONDS=180
 ```
 
 ### SiliconFlow
@@ -117,6 +118,7 @@ LLM_BASE_URL=https://api.siliconflow.cn/v1
 LLM_API_KEY=sk-xxx
 LLM_TEMPERATURE=0.7
 LLM_MAX_TOKENS=4096
+LLM_TIMEOUT_SECONDS=180
 ```
 
 ### Moonshot
