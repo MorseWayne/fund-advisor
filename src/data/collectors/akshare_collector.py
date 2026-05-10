@@ -97,6 +97,23 @@ _SECTOR_COLUMN_MAP: dict[str, str] = {
     "领涨涨跌幅": "leading_stock_change_pct",
 }
 
+# THS (同花顺) sector column mapping — used as fallback when East Money CDN
+# blocks non-browser TLS connections (see fetch_sector_rankings docstring).
+_SECTOR_COLUMN_MAP_THS: dict[str, str] = {
+    "序号": "rank",
+    "板块": "name",
+    "涨跌幅": "change_pct",
+    "总成交量": "volume",
+    "总成交额": "amount",
+    "净流入": "net_inflow",
+    "上涨家数": "up_count",
+    "下跌家数": "down_count",
+    "均价": "avg_price",
+    "领涨股": "leading_stock",
+    "领涨股-最新价": "leading_stock_price",
+    "领涨股-涨跌幅": "leading_stock_change_pct",
+}
+
 _NORTH_FLOW_COLUMN_MAP: dict[str, str] = {
     "日期": "date",
     "时间": "time",
@@ -405,82 +422,91 @@ class AKShareCollector:
             return {"error": str(e), "indices": []}
 
     async def fetch_sector_rankings(self, *, limit: int | None = 50) -> dict[str, Any]:
-        """Fetch industry board gain/loss rankings."""
-        try:
-            ak_module = _require_akshare()
-            df = await self._call_akshare(ak_module.stock_board_industry_name_em)
-            if df is None or df.empty:
-                return {"error": "No sector ranking data available", "sectors": []}
+        """Fetch industry board gain/loss rankings.
 
-            records = _dataframe_records(df, _SECTOR_COLUMN_MAP, limit=limit)
-            return {
-                "sectors": records,
-                "count": len(records),
-                "timestamp": int(datetime.now().timestamp()),
-            }
+        Tries East Money first, then falls back to THS (同花顺) when the East
+        Money CDN blocks non-browser TLS connections (RemoteDisconnected).
+        """
+        ak_module = _require_akshare()
+
+        # ---- East Money path (push2.eastmoney.com — blocked from some networks) ----
+        try:
+            df = await self._call_akshare(ak_module.stock_board_industry_name_em)
+            if df is not None and not df.empty:
+                records = _dataframe_records(df, _SECTOR_COLUMN_MAP, limit=limit)
+                return {
+                    "sectors": records,
+                    "count": len(records),
+                    "timestamp": int(datetime.now().timestamp()),
+                }
+        except Exception:
+            pass
+
+        # ---- THS fallback (data.10jqka.com.cn) ----
+        try:
+            df = await self._call_akshare(ak_module.stock_board_industry_summary_ths)
+            if df is not None and not df.empty:
+                records = _dataframe_records(df, _SECTOR_COLUMN_MAP_THS, limit=limit)
+                return {
+                    "sectors": records,
+                    "count": len(records),
+                    "timestamp": int(datetime.now().timestamp()),
+                    "source": "ths",
+                }
         except Exception as e:
             return {"error": str(e), "sectors": []}
 
+        return {"error": "No sector ranking data available", "sectors": []}
+
     async def fetch_fund_flow_data(self, *, limit: int | None = 50) -> dict[str, Any]:
         """Fetch north-bound and main-force fund flow data."""
-        try:
-            ak_module = _require_akshare()
-            north_df, main_df = await asyncio.gather(
-                self._call_akshare(ak_module.stock_hsgt_north_flow_em),
-                self._fetch_main_force_flow_frame(),
-            )
-
-            north_records = []
-            if north_df is not None and not north_df.empty:
-                north_records = _dataframe_records(north_df, _NORTH_FLOW_COLUMN_MAP)
-
-            main_records = []
-            if main_df is not None and not main_df.empty:
-                main_records = _dataframe_records(main_df, _MAIN_FORCE_COLUMN_MAP, limit=limit)
-
-            north_bound = _extract_latest_metric(
-                north_records,
-                (
-                    "north_bound_net_inflow",
-                    "north_bound_net_buy",
-                    "north_bound",
-                    "net_inflow",
-                    "net_buy",
-                    "value",
-                ),
-            )
-            main_force = sum(
-                float(row.get("main_force_net_inflow") or 0)
-                for row in main_records
-                if isinstance(row.get("main_force_net_inflow"), (int, float))
-            )
-            sector_flows = {
-                str(row["name"]): float(row["main_force_net_inflow"])
-                for row in main_records
-                if row.get("name") is not None and isinstance(row.get("main_force_net_inflow"), (int, float))
-            }
-
-            return {
-                "north_bound": north_bound,
-                "main_force": round(main_force, 4),
-                "sector_flows": sector_flows,
-                "north_bound_records": north_records,
-                "main_force_records": main_records,
-                "timestamp": int(datetime.now().timestamp()),
-            }
-        except Exception as e:
-            return {"error": str(e), "north_bound_records": [], "main_force_records": []}
-
-    async def _fetch_main_force_flow_frame(self) -> Any:
-        """Fetch main-force flow data with endpoint-compatible fallbacks."""
         ak_module = _require_akshare()
+
+        # North-bound: use stock_hsgt_hist_em (stock_hsgt_north_flow_em removed in recent akshare).
+        north_bound: float | None = None
+        north_records: list[dict[str, Any]] = []
         try:
-            return await self._call_akshare(ak_module.stock_sector_fund_flow_rank, indicator="今日")
-        except TypeError:
-            try:
-                return await self._call_akshare(ak_module.stock_sector_fund_flow_rank)
-            except Exception:
-                return await self._call_akshare(ak_module.stock_money_flow_em)
+            north_df = await self._call_akshare(ak_module.stock_hsgt_hist_em)
+            if north_df is not None and not north_df.empty:
+                north_records = _dataframe_records(north_df, {})
+                latest = north_records[-1] if north_records else {}
+                val = latest.get("当日成交净买额")
+                north_bound = _to_float(val)
+        except Exception:
+            pass
+
+        # Main-force: use stock_fund_flow_industry (more stable than sector rank endpoints).
+        main_records: list[dict[str, Any]] = []
+        try:
+            main_df = await self._call_akshare(ak_module.stock_fund_flow_industry)
+            if main_df is not None and not main_df.empty:
+                main_records = _dataframe_records(main_df, {
+                    "行业": "name",
+                    "净额": "main_force_net_inflow",
+                    "行业-涨跌幅": "change_pct",
+                }, limit=limit)
+        except Exception:
+            pass
+
+        main_force = sum(
+            float(row.get("main_force_net_inflow") or 0)
+            for row in main_records
+            if isinstance(row.get("main_force_net_inflow"), (int, float))
+        )
+        sector_flows = {
+            str(row["name"]): float(row["main_force_net_inflow"])
+            for row in main_records
+            if row.get("name") is not None and isinstance(row.get("main_force_net_inflow"), (int, float))
+        }
+
+        return {
+            "north_bound": north_bound,
+            "main_force": round(main_force, 4),
+            "sector_flows": sector_flows,
+            "north_bound_records": north_records,
+            "main_force_records": main_records,
+            "timestamp": int(datetime.now().timestamp()),
+        }
 
     async def fetch_valuation_data(
         self,
@@ -489,43 +515,56 @@ class AKShareCollector:
         limit: int | None = 250,
     ) -> dict[str, Any]:
         """Fetch PE/PB historical valuation data and latest percentiles."""
+        ak_module = _require_akshare()
+
+        # Try CSIndex valuation API for latest PE (returns ~20 recent days).
+        pe_float: float | None = None
+        pb_float: float | None = None
+        records: list[dict[str, Any]] = []
         try:
-            ak_module = _require_akshare()
-            df = await self._call_akshare(ak_module.stock_a_pe_and_pb, symbol=index_code)
-            if df is None or df.empty:
-                return {"error": f"No valuation data available for {index_code}", "index_code": index_code}
+            df = await self._call_akshare(ak_module.stock_zh_index_value_csindex, symbol=index_code)
+            if df is not None and not df.empty:
+                records = _dataframe_records(df, {})
+                latest = records[-1] if records else {}
+                pe_raw = latest.get("市盈率2") or latest.get("市盈率1")
+                pe_float = _to_float(pe_raw)
+        except Exception:
+            pass
 
-            all_records = _dataframe_records(df, _VALUATION_COLUMN_MAP)
-            latest = all_records[-1] if all_records else {}
+        # Fallback to all-market PB history for PB and PB percentile.
+        if pb_float is None:
+            try:
+                df_pb = await self._call_akshare(ak_module.stock_a_all_pb)
+                if df_pb is not None and not df_pb.empty:
+                    pb_records = _dataframe_records(df_pb, {})
+                    latest_pb = pb_records[-1] if pb_records else {}
+                    pb_val = latest_pb.get("middlePB") or latest_pb.get("equalWeightAveragePB")
+                    pb_float = _to_float(pb_val)
+                    pb_series = _numeric_series(pb_records, ("middlePB", "equalWeightAveragePB"))
+                    pb_percentile = _percentile_rank(pb_series, pb_float)
+                else:
+                    pb_percentile = None
+            except Exception:
+                pb_percentile = None
+        else:
+            pb_percentile = None
 
-            pe_keys = ("pe_ratio_ttm", "pe_ratio", "median_pe_ratio_ttm")
-            pb_keys = ("pb_ratio", "median_pb_ratio")
-            pe_value = _first_present(latest, pe_keys)
-            pb_value = _first_present(latest, pb_keys)
-            pe_float = float(pe_value) if isinstance(pe_value, (int, float)) else None
-            pb_float = float(pb_value) if isinstance(pb_value, (int, float)) else None
+        pe_percentile = None
+        if records and pe_float is not None:
+            pe_series = _numeric_series(records, ("市盈率2", "市盈率1"))
+            pe_percentile = _percentile_rank(pe_series, pe_float)
 
-            pe_percentile = _first_present(latest, ("pe_percentile", "median_pe_percentile"))
-            pb_percentile = _first_present(latest, ("pb_percentile", "median_pb_percentile"))
-            if pe_percentile is None:
-                pe_percentile = _percentile_rank(_numeric_series(all_records, pe_keys), pe_float)
-            if pb_percentile is None:
-                pb_percentile = _percentile_rank(_numeric_series(all_records, pb_keys), pb_float)
-
-            records = all_records[-limit:] if limit is not None else all_records
-            return {
-                "index_code": index_code,
-                "pe_ratio": pe_float,
-                "pb_ratio": pb_float,
-                "pe_percentile": _clean_value(pe_percentile),
-                "pb_percentile": _clean_value(pb_percentile),
-                "latest": latest,
-                "records": records,
-                "count": len(records),
-                "timestamp": int(datetime.now().timestamp()),
-            }
-        except Exception as e:
-            return {"error": str(e), "index_code": index_code}
+        return {
+            "index_code": index_code,
+            "pe_ratio": pe_float,
+            "pb_ratio": pb_float,
+            "pe_percentile": _clean_value(pe_percentile),
+            "pb_percentile": _clean_value(pb_percentile),
+            "latest": records[-1] if records else {},
+            "records": records[-limit:] if limit is not None else records,
+            "count": len(records),
+            "timestamp": int(datetime.now().timestamp()),
+        }
 
     async def fetch_news_headlines(
         self,
@@ -534,34 +573,52 @@ class AKShareCollector:
         symbol: str | None = None,
     ) -> dict[str, Any]:
         """Fetch recent financial news headlines."""
-        try:
-            ak_module = _require_akshare()
-            if symbol:
-                df = await self._call_akshare(ak_module.stock_news_em, symbol=symbol)
-            else:
-                try:
-                    df = await self._call_akshare(ak_module.stock_info_global_news_em)
-                except Exception:
-                    df = await self._call_akshare(ak_module.stock_news_em, symbol="000001")
+        ak_module = _require_akshare()
+        df = None
+        fallback = False
 
-            if df is None or df.empty:
+        if symbol:
+            try:
+                df = await self._call_akshare(ak_module.stock_news_em, symbol=symbol)
+            except Exception:
+                pass
+        else:
+            try:
+                df = await self._call_akshare(ak_module.stock_info_global_news_em)
+            except Exception:
+                try:
+                    df = await self._call_akshare(ak_module.stock_news_em, symbol="000001")
+                except Exception:
+                    pass
+
+        # Fallback to CCTV news when East Money news fails (e.g. pyarrow regex issue).
+        if df is None or df.empty:
+            try:
+                from datetime import date as _date
+                df = await self._call_akshare(ak_module.news_cctv, date=_date.today().strftime("%Y%m%d"))
+                fallback = True
+            except Exception:
                 return {"error": "No news headlines available", "headlines": [], "news": []}
 
-            records = _dataframe_records(df, _NEWS_COLUMN_MAP, limit=limit)
-            for row in records:
-                content = row.get("content")
-                if isinstance(content, str) and len(content) > 200:
-                    row["content"] = content[:200] + "..."
+        if df is None or df.empty:
+            return {"error": "No news headlines available", "headlines": [], "news": []}
 
-            headlines = [str(row.get("title")) for row in records if row.get("title")]
-            return {
-                "headlines": headlines,
-                "news": records,
-                "count": len(records),
-                "timestamp": int(datetime.now().timestamp()),
-            }
-        except Exception as e:
-            return {"error": str(e), "headlines": [], "news": []}
+        if fallback:
+            records = _dataframe_records(df, {"date": "publish_time", "title": "title", "content": "content"}, limit=limit)
+        else:
+            records = _dataframe_records(df, _NEWS_COLUMN_MAP, limit=limit)
+        for row in records:
+            content = row.get("content")
+            if isinstance(content, str) and len(content) > 200:
+                row["content"] = content[:200] + "..."
+
+        headlines = [str(row.get("title")) for row in records if row.get("title")]
+        return {
+            "headlines": headlines,
+            "news": records,
+            "count": len(records),
+            "timestamp": int(datetime.now().timestamp()),
+        }
 
     async def fetch_cn_10y_yield(self) -> dict[str, float] | None:
         """Fetch latest China 10-year government bond yield."""
@@ -653,6 +710,97 @@ class AKShareCollector:
         except Exception as exc:
             logger.warning(f"AKShare China PMI fetch failed: {exc}")
             return None
+
+    async def fetch_precious_metals_data(self) -> dict[str, Any]:
+        """Fetch gold and precious metals market data.
+
+        Returns SGE Au99.99 spot price, COMEX gold futures main contract,
+        A-share gold concept board performance, and gold ETF identifiers.
+        """
+        ak_module = _require_akshare()
+        result: dict[str, Any] = {"timestamp": int(datetime.now().timestamp())}
+
+        # ---- Gold spot price (Shanghai Gold Exchange Au99.99) ----
+        try:
+            df = await self._call_akshare(ak_module.spot_golden_benchmark_sge)
+            if df is not None and not df.empty:
+                latest = df.iloc[-1]
+                result["gold_spot"] = {
+                    "price": _to_float(latest.get("晚盘价")),
+                    "date": str(latest.get("交易时间", "")),
+                }
+                if len(df) >= 5:
+                    prev = df.iloc[-6]
+                    spot_now = _to_float(latest.get("晚盘价"))
+                    spot_5d = _to_float(prev.get("晚盘价"))
+                    if spot_now is not None and spot_5d is not None and spot_5d != 0:
+                        result["gold_spot"]["change_5d"] = round((spot_now - spot_5d) / spot_5d * 100, 2)
+        except Exception:
+            pass
+
+        # ---- COMEX gold futures (main contract) ----
+        try:
+            df = await self._call_akshare(ak_module.futures_global_spot_em)
+            if df is not None and not df.empty:
+                gold = df[df["名称"].str.contains(r"迷你黄金|微型黄金|COMEX金", na=False, regex=True)]
+                if not gold.empty:
+                    gold_sorted = gold.sort_values("成交量", ascending=False)
+                    main = gold_sorted.iloc[0]
+                    result["comex_gold"] = {
+                        "name": str(main.get("名称", "")),
+                        "price": _to_float(main.get("最新价")),
+                        "change_pct": _to_float(main.get("涨跌幅")),
+                        "volume": _to_float(main.get("成交量")),
+                    }
+                # Add COMEX silver as well
+                silver = df[df["名称"].str.contains(r"COMEX白", na=False)]
+                if not silver.empty:
+                    silver_sorted = silver.sort_values("成交量", ascending=False)
+                    main_silver = silver_sorted.iloc[0]
+                    result["comex_silver"] = {
+                        "name": str(main_silver.get("名称", "")),
+                        "price": _to_float(main_silver.get("最新价")),
+                        "change_pct": _to_float(main_silver.get("涨跌幅")),
+                    }
+        except Exception:
+            pass
+
+        # ---- A-share gold concept board (THS source) ----
+        try:
+            df = await self._call_akshare(ak_module.stock_board_concept_index_ths, symbol="黄金概念")
+            if df is not None and not df.empty:
+                records = _dataframe_records(df, {
+                    "日期": "date",
+                    "开盘价": "open",
+                    "收盘价": "close",
+                    "最高价": "high",
+                    "最低价": "low",
+                    "成交量": "volume",
+                    "成交额": "amount",
+                })
+                result["gold_concept"] = {
+                    "latest": records[-1] if records else {},
+                    "records": records[-20:] if len(records) > 20 else records,
+                }
+        except Exception:
+            pass
+
+        # ---- Gold ETF identifiers (filtered from ETF spot data) ----
+        _GOLD_ETF_CODES = frozenset({"518880", "159937", "159934", "518800"})
+        try:
+            etf_df = await self._call_akshare(ak_module.fund_etf_spot_em)
+            if etf_df is not None and not etf_df.empty:
+                etf_records = _dataframe_records(etf_df, _ETF_COLUMN_MAP)
+                gold_etfs = [
+                    r for r in etf_records
+                    if str(r.get("code", "")) in _GOLD_ETF_CODES
+                ]
+                if gold_etfs:
+                    result["gold_etfs"] = gold_etfs
+        except Exception:
+            pass
+
+        return result
 
     # Compatibility aliases for likely pipeline naming conventions.
     async def get_etf_spot_data(self) -> dict[str, Any]:

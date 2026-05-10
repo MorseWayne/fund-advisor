@@ -71,6 +71,7 @@ class AnalysisEngine:
         fund_flows = _record(snapshot.get("fund_flows"))
         macro = _record(snapshot.get("macro"))
         valuation_input = _record(snapshot.get("valuation"))
+        precious_metals = _record(snapshot.get("precious_metals"))
 
         if self.db is not None:
             self._load_history_from_db(snapshot, indices, etfs)
@@ -79,6 +80,7 @@ class AnalysisEngine:
         rotation_result = self._analyze_rotation(sectors, fund_flows, macro)
         valuation_result = self._analyze_valuation(indices, etfs, macro, valuation_input)
         risk_alerts, risk_metrics = self._analyze_risk(snapshot, indices, etfs)
+        gold_result = self._analyze_precious_metals(precious_metals)
 
         overview = self._build_overview(trend_result, valuation_result, risk_alerts)
         sector_opportunities = self._build_sector_opportunities(rotation_result.get("momentum_ranking"))
@@ -94,6 +96,7 @@ class AnalysisEngine:
             "daily_report_text": "",
             "rotation": rotation_result,
             "risk_metrics": risk_metrics,
+            "precious_metals": gold_result,
         }
 
     def _load_history_from_db(
@@ -326,6 +329,67 @@ class AnalysisEngine:
                 "momentum_rank": rank,
             })
         return opportunities
+
+    @staticmethod
+    def _analyze_precious_metals(pm: dict[str, Any]) -> dict[str, Any]:
+        """Build gold/precious metals summary from collected data."""
+        result: dict[str, Any] = {}
+
+        gold_spot = pm.get("gold_spot") or {}
+        result["gold_spot_price"] = gold_spot.get("price")
+        result["gold_spot_change_5d"] = gold_spot.get("change_5d")
+
+        comex = pm.get("comex_gold") or {}
+        result["comex_gold_price"] = comex.get("price")
+        result["comex_gold_change_pct"] = comex.get("change_pct")
+        result["comex_gold_name"] = comex.get("name")
+        comex_silver = pm.get("comex_silver") or {}
+        result["comex_silver_price"] = comex_silver.get("price")
+        result["comex_silver_change_pct"] = comex_silver.get("change_pct")
+
+        concept = pm.get("gold_concept") or {}
+        latest_concept = concept.get("latest") or {}
+        concept_records = concept.get("records") or []
+        concept_change_pct = None
+        if concept_records and len(concept_records) >= 2:
+            try:
+                prev_close = float(concept_records[-2].get("close") or 0)
+                curr_close = float(concept_records[-1].get("close") or 0)
+                if prev_close != 0:
+                    concept_change_pct = round((curr_close - prev_close) / prev_close * 100, 2)
+            except (TypeError, ValueError):
+                pass
+        result["gold_concept_change_pct"] = concept_change_pct
+
+        gold_etfs = pm.get("gold_etfs") or []
+        result["gold_etfs"] = gold_etfs
+
+        # Determine gold direction signal
+        spot_5d = result.get("gold_spot_change_5d")
+        comex_pct = result.get("comex_gold_change_pct")
+        concept_pct = result.get("gold_concept_change_pct")
+
+        signals = []
+        if spot_5d is not None:
+            signals.append("spot" if spot_5d >= 0 else "spot")
+        if comex_pct is not None:
+            signals.append(comex_pct >= 0)
+        if concept_pct is not None:
+            signals.append(concept_pct >= 0)
+
+        if signals:
+            up_count = sum(1 for s in signals if s)
+            if up_count == len(signals):
+                direction = "gold_up"
+            elif up_count == 0:
+                direction = "gold_down"
+            else:
+                direction = "gold_mixed"
+        else:
+            direction = None
+
+        result["direction"] = direction
+        return result
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

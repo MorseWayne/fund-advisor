@@ -2,7 +2,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -136,6 +136,7 @@ class DailyMarketSnapshot:
     macro: dict[str, float] = field(default_factory=dict)
     news_headlines: list[str] = field(default_factory=list)
     valuation: dict[str, float] = field(default_factory=dict)
+    precious_metals: dict[str, Any] = field(default_factory=dict)
     validation_errors: list[str] = field(default_factory=list)
     validation_warnings: list[str] = field(default_factory=list)
 

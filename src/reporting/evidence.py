@@ -121,6 +121,7 @@ def build_report_evidence(
         "risk_alerts": _records(result.get("risk_alerts")),
         "portfolio_status": _record(result.get("portfolio_status")),
         "risk_metrics": _record(result.get("risk_metrics")),
+        "precious_metals": _record(result.get("precious_metals")),
     }
 
     metrics = _collect_metrics(sections, date)
@@ -169,6 +170,12 @@ def _collect_metrics(sections: Mapping[str, object], as_of: str) -> list[Evidenc
 
     risk_metrics = _record(sections.get("risk_metrics"))
     _add_metric(metrics, "risk.max_drawdown", "最大回撤", risk_metrics.get("max_drawdown"), "sections.risk_metrics.max_drawdown", as_of, "percent")
+
+    pm = _record(sections.get("precious_metals"))
+    _add_metric(metrics, "pm.gold_spot_price", "Au99.99价格(元/克)", pm.get("gold_spot_price"), "sections.precious_metals.gold_spot_price", as_of, "yuan/g")
+    _add_metric(metrics, "pm.gold_spot_change_5d", "Au99.99 5日涨跌", pm.get("gold_spot_change_5d"), "sections.precious_metals.gold_spot_change_5d", as_of, "percent")
+    _add_metric(metrics, "pm.comex_gold_change_pct", "COMEX金涨跌", pm.get("comex_gold_change_pct"), "sections.precious_metals.comex_gold_change_pct", as_of, "percent")
+    _add_metric(metrics, "pm.gold_concept_change_pct", "黄金概念涨跌", pm.get("gold_concept_change_pct"), "sections.precious_metals.gold_concept_change_pct", as_of, "percent")
     return metrics
 
 

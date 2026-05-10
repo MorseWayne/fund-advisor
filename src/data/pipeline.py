@@ -30,6 +30,13 @@ def _percent_points_to_ratio(value: Any) -> Any:
         return value
     if not math.isfinite(number):
         return value
+    # AKShare index endpoints (e.g. stock_zh_index_spot_sina) return change_pct
+    # as a ratio (e.g. -0.003 for -0.3%), while ETF and yfinance endpoints
+    # return percentage points (e.g. 3.91 for 3.91%).  A daily move > 20%
+    # is extremely rare for ETFs/indices, so |value| <= 0.2 is treated as
+    # already a ratio; anything larger is divided by 100.
+    if abs(number) <= 0.2:
+        return number
     return number / 100.0
 
 
@@ -75,10 +82,11 @@ class DataPipeline:
             self.akshare.fetch_fund_flow_data(),
             self.akshare.fetch_valuation_data(),
             self.akshare.fetch_news_headlines(),
+            self.akshare.fetch_precious_metals_data(),
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        etf_result, index_result, sector_result, flow_result, val_result, news_result = results
+        etf_result, index_result, sector_result, flow_result, val_result, news_result, pm_result = results
 
         def _safe_dict(result, key, default=None):
             if isinstance(result, Exception):
@@ -102,6 +110,7 @@ class DataPipeline:
             "fund_flows": fund_flows if isinstance(fund_flows, dict) else {},
             "valuation": valuation if isinstance(valuation, list) else [],
             "news": news if isinstance(news, list) else [],
+            "precious_metals": _safe_dict(pm_result, "precious_metals", {}) if isinstance(pm_result, dict) else {},
         }
 
     async def collect_global_data(self) -> dict[str, Any]:
@@ -261,6 +270,7 @@ class DataPipeline:
             date=today, indices=index_models, etfs=etf_models,
             sectors=sector_models, fund_flows=fund_flow_model,
             macro=macro, news_headlines=headlines[:10], valuation=valuation_summary,
+            precious_metals=a_share_data.get("precious_metals", {}),
         )
 
         validation = validate_snapshot(snapshot)
