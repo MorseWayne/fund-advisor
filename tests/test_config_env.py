@@ -30,7 +30,7 @@ llm:
                 "LLM_API_KEY=from-dotenv",
                 "LLM_BASE_URL=https://dotenv.example.com/v1",
                 "LLM_TEMPERATURE=0.2",
-                "LLM_MAX_TOKENS=512",
+                "LLM_MAX_TOKENS=1024",
             ]
         ),
         encoding="utf-8",
@@ -43,7 +43,7 @@ llm:
     assert config.llm.model == "dotenv-model"
     assert config.llm.base_url == "https://dotenv.example.com/v1"
     assert config.llm.temperature == 0.2
-    assert config.llm.max_tokens == 512
+    assert config.llm.max_tokens == 1024
     assert client.api_key == "from-dotenv"
 
 

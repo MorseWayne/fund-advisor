@@ -57,7 +57,7 @@ class LLMConfig(BaseModel):
     model: str = "gpt-4o-mini"
     base_url: str = "https://api.openai.com/v1"
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = 4096
     report: LLMReportConfig = LLMReportConfig()
 
 

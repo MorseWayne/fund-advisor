@@ -31,7 +31,12 @@ class ReportGenerator:
 
         try:
             logger.info("Calling LLM for daily report generation")
-            report = await self.llm_client.generate(user_prompt, system_prompt=system_prompt)
+            report = await self.llm_client.generate(
+                user_prompt,
+                system_prompt=system_prompt,
+                temperature=0.7,
+                max_tokens=4096,
+            )
             formatted_report = report.strip()
             if not formatted_report:
                 raise ValueError("LLM returned an empty report")

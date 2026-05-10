@@ -27,7 +27,7 @@ class LLMClient:
         api_key: str | None = None,
         base_url: str = "https://api.openai.com/v1",
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = 4096,
     ) -> None:
         self.provider: str = provider
         self.model: str = model
@@ -46,14 +46,24 @@ class LLMClient:
             api_key=api_key,
             base_url=str(getattr(config, "base_url", "https://api.openai.com/v1")),
             temperature=float(getattr(config, "temperature", 0.7)),
-            max_tokens=int(getattr(config, "max_tokens", 2048)),
+            max_tokens=int(getattr(config, "max_tokens", 4096)),
         )
 
-    async def generate(self, prompt: str, system_prompt: str = "") -> str:
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
         """Generate text from ``prompt`` using chat completions.
 
         Retries transient rate-limit/service-unavailable responses (HTTP 429/503)
         up to three attempts with exponential backoff.
+
+        ``temperature`` and ``max_tokens`` may be overridden per-call; when
+        omitted the instance defaults are used.
         """
 
         if not self.api_key:
@@ -65,7 +75,12 @@ class LLMClient:
             raise LLMClientError(message)
 
         endpoint = f"{self.base_url}/chat/completions"
-        payload = self._build_payload(prompt=prompt, system_prompt=system_prompt)
+        payload = self._build_payload(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -117,7 +132,14 @@ class LLMClient:
         logger.error(message)
         raise LLMClientError(message) from last_error
 
-    def _build_payload(self, *, prompt: str, system_prompt: str) -> dict[str, object]:
+    def _build_payload(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> dict[str, object]:
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -126,8 +148,8 @@ class LLMClient:
         return {
             "model": self.model,
             "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "temperature": temperature if temperature is not None else self.temperature,
+            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
 
     async def _retry_or_raise(

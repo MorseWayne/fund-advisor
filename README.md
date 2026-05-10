@@ -105,7 +105,7 @@ LLM_MODEL=gpt-4o-mini
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=sk-xxx
 LLM_TEMPERATURE=0.7
-LLM_MAX_TOKENS=2048
+LLM_MAX_TOKENS=4096
 ```
 
 ### SiliconFlow
@@ -116,7 +116,7 @@ LLM_MODEL=Qwen/Qwen3-32B
 LLM_BASE_URL=https://api.siliconflow.cn/v1
 LLM_API_KEY=sk-xxx
 LLM_TEMPERATURE=0.7
-LLM_MAX_TOKENS=2048
+LLM_MAX_TOKENS=4096
 ```
 
 ### Moonshot
@@ -127,7 +127,7 @@ LLM_MODEL=moonshot-v1-8k
 LLM_BASE_URL=https://api.moonshot.cn/v1
 LLM_API_KEY=sk-xxx
 LLM_TEMPERATURE=0.7
-LLM_MAX_TOKENS=2048
+LLM_MAX_TOKENS=4096
 ```
 
 ### 本地 OpenAI-compatible 服务
@@ -138,7 +138,7 @@ LLM_MODEL=qwen2.5:7b
 LLM_BASE_URL=http://localhost:8000/v1
 LLM_API_KEY=local
 LLM_TEMPERATURE=0.7
-LLM_MAX_TOKENS=2048
+LLM_MAX_TOKENS=4096
 ```
 
 ## 持仓配置
@@ -289,7 +289,7 @@ Environment=LLM_MODEL=gpt-4o-mini
 Environment=LLM_BASE_URL=https://api.openai.com/v1
 Environment=LLM_API_KEY=sk-xxx
 Environment=LLM_TEMPERATURE=0.7
-Environment=LLM_MAX_TOKENS=2048
+Environment=LLM_MAX_TOKENS=4096
 Environment=WECHAT_WORK_WEBHOOK_URL=https://...
 
 [Install]
