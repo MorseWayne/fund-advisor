@@ -11,6 +11,7 @@ from src.data.pipeline import DataPipeline
 from src.analysis.engine import AnalysisEngine
 from src.llm.client import LLMClient
 from src.llm.report_generator import ReportGenerator
+from src.llm.report_period import report_period_english_label, report_period_label, select_report_period
 from src.notify.channels import NotificationManager, WeChatWorkChannel, FeishuChannel
 from src.utils.logging_config import setup_logging
 from src.scheduler.jobs import create_scheduler, schedule_daily_collection, schedule_intraday_monitor, is_trading_time
@@ -63,10 +64,12 @@ async def run_once():
 
     llm_client = LLMClient.from_config(config.llm)
     report_gen = ReportGenerator(llm_client)
-    report_text = await report_gen.generate_daily_report(analysis)
+    report_period = select_report_period(snapshot.date)
+    report_label = report_period_label(report_period)
+    report_text = await report_gen.generate_daily_report(analysis, report_period=report_period)
 
     print(f"\n{'='*60}")
-    print(f"  Fund-Advisor Daily Report: {snapshot.date}")
+    print(f"  Fund-Advisor {report_period_english_label(report_period)}: {snapshot.date}")
     print(f"{'='*60}")
     print(f"  A-Share Indices: {len([i for i in snapshot.indices if i.startswith('sh') or i.startswith('sz')])}")
     print(f"  Global Indices:  {len([i for i in snapshot.indices if i.startswith('^')])}")
@@ -79,7 +82,7 @@ async def run_once():
 
     nm = _setup_notification_manager(config)
     if nm.channels:
-        title = f"投资日报 {snapshot.date}"
+        title = f"投资{report_label} {snapshot.date}"
         await nm.broadcast(report_text, title=title)
 
     return snapshot
@@ -115,10 +118,12 @@ async def run_scheduled():
             }
             llm_client = LLMClient.from_config(config.llm)
             report_gen = ReportGenerator(llm_client)
-            report_text = await report_gen.generate_daily_report(analysis)
+            report_period = select_report_period(snapshot.date)
+            report_label = report_period_label(report_period)
+            report_text = await report_gen.generate_daily_report(analysis, report_period=report_period)
             if nm.channels:
-                await nm.broadcast(report_text, title=f"投资日报 {snapshot.date}")
-            logger.info("Daily report generated and pushed")
+                await nm.broadcast(report_text, title=f"投资{report_label} {snapshot.date}")
+            logger.info("{} generated and pushed", report_label)
         except Exception as e:
             logger.error(f"Daily job failed: {e}")
 

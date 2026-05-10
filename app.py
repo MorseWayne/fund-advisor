@@ -284,7 +284,7 @@ def render_report_history():
 
 def render_manual_trigger():
     st.header("手动触发即时分析")
-    st.write("点击下方按钮触发数据采集 → 指标计算 → LLM日报生成 → 推送")
+    st.write("点击下方按钮触发数据采集 → 指标计算 → LLM报告生成 → 推送")
 
     if st.button("🚀 立即分析", type="primary", use_container_width=True):
         config = load_config()
@@ -310,13 +310,16 @@ def render_manual_trigger():
                 "total_change_pct": portfolio.total_change_pct,
                 "total_profit_loss": portfolio.total_profit_loss,
             }
-            status.update(label="3/4 生成日报...", state="running")
+            status.update(label="3/4 生成报告...", state="running")
 
             from src.llm.client import LLMClient
             from src.llm.report_generator import ReportGenerator
+            from src.llm.report_period import report_period_label, select_report_period
             llm_client = LLMClient.from_config(config.llm)
             report_gen = ReportGenerator(llm_client)
-            report_text = await report_gen.generate_daily_report(analysis)
+            report_period = select_report_period(snapshot.date)
+            report_label = report_period_label(report_period)
+            report_text = await report_gen.generate_daily_report(analysis, report_period=report_period)
             status.update(label="4/4 推送通知...", state="running")
 
             import os
@@ -329,20 +332,20 @@ def render_manual_trigger():
             if config.notify.feishu.enabled and fs_url:
                 nm.add_channel("feishu", FeishuChannel(fs_url))
             if nm.channels:
-                await nm.broadcast(report_text, title=f"投资日报 {snapshot.date}")
+                await nm.broadcast(report_text, title=f"投资{report_label} {snapshot.date}")
 
             status.update(label="完成!", state="complete")
-            return snapshot, portfolio, report_text
+            return snapshot, portfolio, report_text, report_label
 
         result = run_async(do_analysis())
-        snapshot, portfolio, report_text = result
+        snapshot, portfolio, report_text, report_label = result
 
-        st.success(f"分析完成: {snapshot.date}")
+        st.success(f"{report_label}分析完成: {snapshot.date}")
         st.metric("数据量", f"{len(snapshot.etfs)} ETFs, {len(snapshot.indices)} 指数, {len(snapshot.sectors)} 行业")
         if portfolio.total_value > 0:
             st.metric("持仓市值", f"¥{portfolio.total_value:,.0f}")
         st.divider()
-        st.subheader("📋 日报内容")
+        st.subheader(f"📋 {report_label}内容")
         st.markdown(report_text)
 
 
