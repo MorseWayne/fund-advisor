@@ -1,4 +1,5 @@
 import asyncio
+import math
 import sys
 import time
 from datetime import datetime, date, timedelta
@@ -18,6 +19,37 @@ from src.data.portfolio import load_portfolio
 from src.data.models import DailyMarketSnapshot, HoldingStatus, PortfolioStatus
 from src.data.validation import validate_snapshot  # pyright: ignore[reportMissingImports]
 from src.utils.logging_config import setup_logging
+
+
+def _percent_points_to_ratio(value: Any) -> Any:
+    if value is None or isinstance(value, bool):
+        return value
+    try:
+        number = float(str(value).strip().replace("%", "").replace(",", ""))
+    except (TypeError, ValueError):
+        return value
+    if not math.isfinite(number):
+        return value
+    return number / 100.0
+
+
+def _normalize_market_record(raw_record: Any) -> dict[str, Any] | None:
+    if not isinstance(raw_record, dict):
+        return None
+    record = dict(raw_record)
+    if "change_pct" in record:
+        record["change_pct"] = _percent_points_to_ratio(record.get("change_pct"))
+    return record
+
+
+def _normalize_etf_record(raw_record: Any) -> dict[str, Any] | None:
+    record = _normalize_market_record(raw_record)
+    if record is None:
+        return None
+    for field in ("volume", "amount"):
+        if record.get(field) is None:
+            record[field] = 0.0
+    return record
 
 
 class DataPipeline:
@@ -132,18 +164,34 @@ class DataPipeline:
             self.collect_global_data(),
         )
 
-        all_indices = {}
+        etfs = [record for item in a_share_data.get("etfs", []) if (record := _normalize_etf_record(item)) is not None]
+        sectors = [record for item in a_share_data.get("sectors", []) if (record := _normalize_market_record(item)) is not None]
+        all_indices: dict[str, dict[str, Any]] = {}
+
+        def _add_index(raw_index: Any) -> None:
+            index_record = _normalize_market_record(raw_index)
+            if index_record is None:
+                return
+            code = str(index_record.get("code") or index_record.get("symbol") or "").strip()
+            if not code:
+                logger.warning(f"Skipping index record without code/symbol: {index_record}")
+                return
+            name = str(index_record.get("name") or index_record.get("label") or code).strip() or code
+            index_record["code"] = code
+            index_record["name"] = name
+            all_indices[code] = index_record
+
         for idx in a_share_data.get("indices", []):
-            all_indices[idx.get("code", "")] = idx
+            _add_index(idx)
         for idx in global_data.get("global_indices", []):
-            all_indices[idx.get("code", "")] = idx
+            _add_index(idx)
 
         macro = global_data.get("macro", {})
         news = a_share_data.get("news", [])
 
-        self.db.upsert_etfs(today, a_share_data.get("etfs", []))
+        self.db.upsert_etfs(today, etfs)
         self.db.upsert_indices(today, list(all_indices.values()))
-        self.db.upsert_sectors(today, a_share_data.get("sectors", []))
+        self.db.upsert_sectors(today, sectors)
 
         fund_flows = a_share_data.get("fund_flows", {}) or {}
         self.db.upsert_fund_flow(
@@ -175,7 +223,7 @@ class DataPipeline:
             )
 
         etf_models = []
-        for etf_dict in a_share_data.get("etfs", []):
+        for etf_dict in etfs:
             etf_models.append(ETFData(
                 code=etf_dict.get("code", ""), name=etf_dict.get("name", ""),
                 price=etf_dict.get("price", 0), change_pct=etf_dict.get("change_pct", 0),
@@ -185,7 +233,7 @@ class DataPipeline:
             ))
 
         sector_models = {}
-        for s in a_share_data.get("sectors", []):
+        for s in sectors:
             name = s.get("name", "")
             sector_models[name] = SectorData(
                 name=name, change_pct=s.get("change_pct", 0),

@@ -56,14 +56,14 @@ class AnalysisEngine:
         self.config: dict[str, Any] = _deep_merge(DEFAULT_ANALYSIS_CONFIG, dict(config or {}))
         self.db = db
 
-    def analyze(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+    def analyze(self, snapshot: Any) -> dict[str, Any]:
         """Run all indicator modules against a processed market snapshot.
 
         Missing inputs produce ``None`` metrics rather than exceptions. The return
         value uses plain dictionaries/lists and avoids Pydantic/dataclass models.
         """
 
-        snapshot = dict(snapshot or {})
+        snapshot = _record(snapshot)
         date = snapshot.get("date")
         indices = _records(snapshot.get("indices"), key_field="code")
         etfs = _records(snapshot.get("etfs"), key_field="code")
