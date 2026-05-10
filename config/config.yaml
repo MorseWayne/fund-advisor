@@ -54,10 +54,10 @@ analysis:
 # LLM配置
 # ---------------------------------------------------------------------------
 llm:
-  provider: deepseek             # deepseek / openai / ollama
-  model: deepseek-chat
-  api_key_env: DEEPSEEK_API_KEY  # 从环境变量读取
-  base_url: https://api.deepseek.com/v1
+  provider: openai               # 任意 OpenAI-compatible provider 名称，仅用于日志
+  model: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY    # 从环境变量读取
+  base_url: https://api.openai.com/v1
   temperature: 0.7
   max_tokens: 2048
 

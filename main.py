@@ -61,13 +61,7 @@ async def run_once():
         "total_profit_loss": portfolio.total_profit_loss,
     }
 
-    llm_client = LLMClient(
-        provider=config.llm.provider,
-        model=config.llm.model,
-        base_url=config.llm.base_url,
-        temperature=config.llm.temperature,
-        max_tokens=config.llm.max_tokens,
-    )
+    llm_client = LLMClient.from_config(config.llm)
     report_gen = ReportGenerator(llm_client)
     report_text = await report_gen.generate_daily_report(analysis)
 
@@ -119,11 +113,7 @@ async def run_scheduled():
                 "total_change_pct": portfolio.total_change_pct,
                 "total_profit_loss": portfolio.total_profit_loss,
             }
-            llm_client = LLMClient(
-                provider=config.llm.provider, model=config.llm.model,
-                base_url=config.llm.base_url, temperature=config.llm.temperature,
-                max_tokens=config.llm.max_tokens,
-            )
+            llm_client = LLMClient.from_config(config.llm)
             report_gen = ReportGenerator(llm_client)
             report_text = await report_gen.generate_daily_report(analysis)
             if nm.channels:

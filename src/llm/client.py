@@ -1,4 +1,4 @@
-"""Minimal OpenAI-compatible LLM client with DeepSeek defaults."""
+"""Minimal OpenAI-compatible LLM client."""
 
 from __future__ import annotations
 
@@ -22,19 +22,35 @@ class LLMClient:
 
     def __init__(
         self,
-        provider: str = "deepseek",
-        model: str = "deepseek-chat",
+        provider: str = "openai",
+        model: str = "gpt-4o-mini",
         api_key: str | None = None,
-        base_url: str = "https://api.deepseek.com/v1",
+        api_key_env: str = "OPENAI_API_KEY",
+        base_url: str = "https://api.openai.com/v1",
         temperature: float = 0.7,
         max_tokens: int = 2048,
     ) -> None:
         self.provider: str = provider
         self.model: str = model
-        self.api_key: str | None = api_key or os.environ.get("DEEPSEEK_API_KEY")
+        self.api_key_env: str = api_key_env
+        self.api_key: str | None = api_key or os.environ.get(api_key_env)
         self.base_url: str = base_url.rstrip("/")
         self.temperature: float = temperature
         self.max_tokens: int = max_tokens
+
+    @classmethod
+    def from_config(cls, config: object, *, api_key: str | None = None) -> "LLMClient":
+        """Build a client from an ``LLMConfig``-like object."""
+
+        return cls(
+            provider=str(getattr(config, "provider", "openai")),
+            model=str(getattr(config, "model", "gpt-4o-mini")),
+            api_key=api_key,
+            api_key_env=str(getattr(config, "api_key_env", "OPENAI_API_KEY")),
+            base_url=str(getattr(config, "base_url", "https://api.openai.com/v1")),
+            temperature=float(getattr(config, "temperature", 0.7)),
+            max_tokens=int(getattr(config, "max_tokens", 2048)),
+        )
 
     async def generate(self, prompt: str, system_prompt: str = "") -> str:
         """Generate text from ``prompt`` using chat completions.
@@ -44,7 +60,10 @@ class LLMClient:
         """
 
         if not self.api_key:
-            message = "Missing DeepSeek API key: set DEEPSEEK_API_KEY or pass api_key."
+            message = (
+                f"Missing API key for provider '{self.provider}': "
+                f"set {self.api_key_env} or pass api_key."
+            )
             logger.error(message)
             raise LLMClientError(message)
 

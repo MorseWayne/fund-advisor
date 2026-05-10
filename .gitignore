@@ -65,5 +65,17 @@ portfolio.local.yaml
 # --- uv (optional: uncomment if you don't want to lock file in repo) ---
 # uv.lock
 
-# --- Project Specific ---
+# --- Claude / IDE Extensions ---
+.claude/
 .superpowers/
+
+# --- GitNexus ---
+.gitnexus
+
+# --- mypy ---
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# --- Jupyter ---
+.ipynb_checkpoints/

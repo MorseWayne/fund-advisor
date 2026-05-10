@@ -51,10 +51,10 @@ class LLMReportConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: str = "deepseek"
-    model: str = "deepseek-chat"
-    api_key_env: str = "DEEPSEEK_API_KEY"
-    base_url: str = "https://api.deepseek.com/v1"
+    provider: str = "openai"
+    model: str = "gpt-4o-mini"
+    api_key_env: str = "OPENAI_API_KEY"
+    base_url: str = "https://api.openai.com/v1"
     temperature: float = 0.7
     max_tokens: int = 2048
     report: LLMReportConfig = LLMReportConfig()

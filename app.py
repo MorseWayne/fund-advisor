@@ -314,11 +314,7 @@ def render_manual_trigger():
 
             from src.llm.client import LLMClient
             from src.llm.report_generator import ReportGenerator
-            llm_client = LLMClient(
-                provider=config.llm.provider, model=config.llm.model,
-                base_url=config.llm.base_url, temperature=config.llm.temperature,
-                max_tokens=config.llm.max_tokens,
-            )
+            llm_client = LLMClient.from_config(config.llm)
             report_gen = ReportGenerator(llm_client)
             report_text = await report_gen.generate_daily_report(analysis)
             status.update(label="4/4 推送通知...", state="running")
