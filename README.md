@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![uv](https://img.shields.io/badge/uv-包管理-8A2BE2)](https://github.com/astral-sh/uv)
 
-个人基金/ETF 智能投顾日报系统。它面向个人投资组合，自动采集 A 股和全球市场数据，写入本地 SQLite，运行趋势、轮动、估值、风险分析，再用兼容 OpenAI Chat Completions 协议的 LLM 生成中文日报，并通过企业微信、飞书或 Streamlit 看板交付。
+个人基金/ETF 智能投顾报告系统。它面向个人投资组合，自动采集 A 股和全球市场数据，写入本地 SQLite，运行趋势、轮动、估值、风险分析，再用兼容 OpenAI Chat Completions 协议的 LLM 生成中文日报、周报或月报，并通过企业微信、飞书或 Streamlit 看板交付。
 
 这个项目只生成分析和建议，不做自动下单。
 
@@ -14,19 +14,25 @@
 - 全球数据：通过 yfinance 采集美股 ETF、全球指数、VIX、USD/CNY、美债收益率。
 - 历史数据：支持 ETF 和指数 OHLCV 回填，用于均线、回撤、相关性等指标。
 - 分析引擎：覆盖趋势、行业轮动、估值温度、异常波动、最大回撤和持仓盈亏。
-- LLM 日报：生成“今日概览、方向信号、板块机会、估值温度、风险提醒、你的持仓”六段式报告。
-- 多渠道交付：支持企业微信、飞书 webhook 推送，以及 Streamlit 本地看板。
+- LLM 报告：按日期自动生成日报、周报或月报，输出“概览、方向信号、板块机会、估值温度、风险提醒、你的持仓”六段式中文报告。
+- 报告质量追踪：生成证据包、反方审查、历史上下文和变化摘要，并对结构、数字溯源、绝对化建议、缺失数据披露做确定性校验。
+- 审计与回退：LLM 失败时生成规则报告；每次报告写入 `data/reports/report-audit.jsonl`，记录来源、验证结果、评分和证据哈希。
+- 多渠道交付：支持企业微信、飞书 webhook 推送，以及 Streamlit 本地看板和报告质量面板。
 
 ## 系统数据流
 
 ```mermaid
 flowchart LR
-    A[AKShare / yfinance] --> B[DataPipeline]
-    B --> C[(SQLite)]
-    C --> D[AnalysisEngine]
-    D --> E[LLM 日报生成]
-    E --> F[企业微信 / 飞书]
-    C --> G[Streamlit 看板]
+  A[AKShare / yfinance] --> B[DataPipeline]
+  B --> C[(SQLite)]
+  C --> D[AnalysisEngine]
+  D --> H[ReportEvidence + 历史审计上下文]
+  H --> E[LLM / 规则回退报告]
+  E --> I[Verifier + Evaluator]
+  I --> J[(report-audit.jsonl)]
+  I --> F[企业微信 / 飞书]
+  C --> G[Streamlit 看板]
+  J --> G
 ```
 
 详细架构图见 [docs/architecture.html](docs/architecture.html)。
@@ -49,7 +55,7 @@ uv sync
 cp .env.example .env
 ```
 
-LLM 的 provider、model、base URL、API key、temperature 和 max tokens 都在 `.env` 里配置。`.env` 会在 `load_config()` 时自动加载，且不会覆盖系统里已经导出的环境变量。
+LLM 的 provider、model、base URL、API key、temperature、max tokens 和 timeout 都在 `.env` 里配置。`.env` 会在 `load_config()` 时自动加载，且不会覆盖系统里已经导出的环境变量。
 
 ### 3. 配置持仓
 
@@ -77,7 +83,7 @@ print(bp.run_backfill(days=365))
 ### 5. 运行
 
 ```bash
-# 跑一次完整流程：采集 -> 分析 -> 日报 -> 输出；已启用 webhook 时会推送
+# 跑一次完整流程：采集 -> 分析 -> 报告 -> 输出；已启用 webhook 时会推送
 uv run python main.py once
 
 # 启动定时任务
@@ -87,6 +93,8 @@ uv run python main.py scheduler
 uv run streamlit run app.py
 ```
 
+运行一次完整流程后，系统会同步写入报告审计日志。Streamlit 看板的“日报回顾”和“手动触发”页会展示最近评分、验证通过率、阻断项、缺失数据和报告正文。
+
 ## LLM Provider 配置
 
 LLM 客户端调用标准路径：
@@ -95,7 +103,9 @@ LLM 客户端调用标准路径：
 {base_url}/chat/completions
 ```
 
-只要供应商兼容 OpenAI Chat Completions 协议，就可以通过 `.env` 接入。`config/config.yaml` 只保留日报长度、语气等业务配置。
+只要供应商兼容 OpenAI Chat Completions 协议，就可以通过 `.env` 接入。`config/config.yaml` 只保留报告长度、语气等业务配置。
+
+报告周期由 `select_report_period()` 自动选择：月末生成月报，周末生成周报，其余交易日生成日报。无论 LLM 是否可用，`ReportGenerator` 都会返回可审计的报告结果；旧接口 `generate_daily_report()` 仍返回纯文本，新接口 `generate_daily_report_bundle()` 会额外返回证据、校验、评分、历史上下文和变化摘要。
 
 ### OpenAI
 
@@ -130,6 +140,7 @@ LLM_BASE_URL=https://api.moonshot.cn/v1
 LLM_API_KEY=sk-xxx
 LLM_TEMPERATURE=0.7
 LLM_MAX_TOKENS=4096
+LLM_TIMEOUT_SECONDS=180
 ```
 
 ### 本地 OpenAI-compatible 服务
@@ -141,7 +152,22 @@ LLM_BASE_URL=http://localhost:8000/v1
 LLM_API_KEY=local
 LLM_TEMPERATURE=0.7
 LLM_MAX_TOKENS=4096
+LLM_TIMEOUT_SECONDS=180
 ```
+
+## 报告质量与历史追踪
+
+报告生成链路在 `src/reporting/` 中实现，目标是让 LLM 输出可追溯、可复核、可持续改进：
+
+| 模块 | 作用 |
+| --- | --- |
+| `evidence.py` | 将分析结果压缩成证据包，包含可引用指标、章节写作 brief、缺失数据、风险标记和反方审查。 |
+| `verifier.py` | 校验六段式结构、数据日期、缺失数据披露、百分比数字是否来自证据包，以及是否出现绝对化投资表述。 |
+| `evaluation.py` | 按结构、证据、数字溯源、风险处理、缺失数据和行动安全打分，输出 A-D 等级。 |
+| `audit.py` | 将报告、证据哈希、验证结果、评分、风险和缺失数据追加到 `data/reports/report-audit.jsonl`。 |
+| `change.py` | 与上一期同周期报告对比，追踪站线比例、PE 分位数、组合收益、最大回撤和风险变化。 |
+
+当前追踪的质量问题包括：缺少结构项、章节正文过短、未展示数据日期、缺失数据未披露、证据包未支持的百分比数字，以及“稳赚/必涨/保证收益/无风险/满仓买入”等绝对化建议。
 
 ## 持仓配置
 
@@ -187,7 +213,7 @@ uv run --extra dev pytest -q
 # 语法检查
 uv run python -m compileall -q src main.py app.py tests
 
-# 运行一次日报流程
+# 运行一次报告流程
 uv run python main.py once
 
 # 启动调度
@@ -254,11 +280,12 @@ fund-advisor/
 │   │   ├── validation.py      # 数据质量校验
 │   │   └── collectors/        # AKShare / yfinance / retry
 │   ├── analysis/              # 趋势、轮动、估值、风险
-│   ├── llm/                   # OpenAI-compatible 客户端和日报生成
+│   ├── llm/                   # OpenAI-compatible 客户端、报告周期和报告生成
 │   ├── notify/                # 企业微信、飞书推送
+│   ├── reporting/             # 证据包、校验、评分、审计、变化摘要
 │   ├── scheduler/             # APScheduler 任务
 │   └── utils/                 # 日志和工具函数
-├── tests/                     # 自动化测试
+├── tests/                     # 自动化测试和报告质量回归用例
 └── docs/                      # 架构图和设计文档
 ```
 
@@ -308,13 +335,14 @@ sudo systemctl status fund-advisor
 
 - 依赖 AKShare 和 yfinance，外部数据源的可用性、字段变化和限流会影响采集结果。
 - 系统只做分析和建议，不自动交易，不保证收益。
-- LLM 日报只基于采集和分析结果生成；数据缺失时会降级为规则报告。
+- LLM 报告只基于采集和分析结果生成；数据缺失或 LLM 失败时会降级为规则报告，并在报告和审计日志中留下质量提示。
+- 质量校验能发现结构、数字溯源和绝对化表述问题，但不代表投资结论一定正确。
 - 第一次运行前建议做历史回填，否则部分均线、回撤、相关性指标会缺少样本。
 
 ## 路线图
 
 - 结构化 LLM 输出：用 Pydantic 校验日报 JSON，再渲染为文本。
-- 更完整的风险面板：异常波动、回撤、相关性和持仓集中度。
+- 更完整的风险面板：异常波动、回撤、相关性、持仓集中度和报告质量趋势联动。
 - 更丰富的组合约束：仓位上限、定投规则、止盈止损提示。
 - 回测能力：验证信号对历史组合的影响。
 - 多智能体分析：引入正反观点辩论和信号集成。

@@ -279,7 +279,90 @@ def render_report_history():
                 "现价": st.column_config.NumberColumn(format="¥%.3f"),
             }, use_container_width=True, hide_index=True)
 
-    st.info("💡 完整的LLM日报在运行 `uv run python main.py once` 后自动生成并推送。")
+    st.divider()
+    st.subheader("报告质量追踪")
+    try:
+        from src.reporting import ReportAuditLog
+
+        audit_log = ReportAuditLog()
+        audit_summary = audit_log.summary(limit=20)
+        audit_records = audit_log.read_recent(limit=10)
+    except Exception as exc:
+        st.warning(f"报告审计日志读取失败：{type(exc).__name__}")
+        audit_summary = None
+        audit_records = []
+
+    if audit_summary and audit_records:
+        metric_cols = st.columns(4)
+        latest_score = "暂无" if audit_summary.latest_score is None else str(audit_summary.latest_score)
+        average_score = "暂无" if audit_summary.average_score is None else f"{audit_summary.average_score:.1f}"
+        pass_rate = f"{audit_summary.verification_pass_rate * 100:.0f}%"
+        metric_cols[0].metric("最新评分", f"{audit_summary.latest_grade or '-'} {latest_score}")
+        metric_cols[1].metric("平均分", average_score)
+        metric_cols[2].metric("验证通过率", pass_rate)
+        metric_cols[3].metric("审计记录", str(audit_summary.total))
+
+        rows = []
+        for score in reversed(audit_summary.recent_scores[-10:]):
+            finding_codes = score.get("finding_codes") or []
+            rows.append({
+                "日期": score.get("as_of_date"),
+                "周期": score.get("report_period"),
+                "来源": score.get("source"),
+                "评分": score.get("score"),
+                "等级": score.get("grade") or "-",
+                "验证": "通过" if score.get("verification_passed") else "需复核",
+                "问题": ", ".join(finding_codes) if isinstance(finding_codes, list) else "",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        latest_record = audit_records[-1]
+        if latest_record.finding_codes:
+            st.warning("最近报告需复核：" + "、".join(latest_record.finding_codes[:5]))
+        if latest_record.missing_data:
+            st.caption("最近报告缺失数据：" + "、".join(latest_record.missing_data[:5]))
+        if audit_summary.blocker_counts:
+            blocker_text = "、".join(f"{name}×{count}" for name, count in audit_summary.blocker_counts.items())
+            st.error("近期阻断项：" + blocker_text)
+        with st.expander("查看最近报告正文", expanded=False):
+            st.markdown(latest_record.report_text or "暂无正文")
+    else:
+        st.info("暂无报告审计记录。运行 `uv run python main.py once` 后会自动生成质量追踪。")
+
+
+def render_generated_report_quality(bundle):
+    st.subheader("质量校验")
+    score = bundle.quality_score
+    cols = st.columns(4)
+    cols[0].metric("评分", f"{score.grade} {score.overall}")
+    cols[1].metric("来源", "LLM" if bundle.source == "llm" else "Fallback")
+    cols[2].metric("验证", "通过" if bundle.verification.passed else "需复核")
+    cols[3].metric("置信度", f"{bundle.verification.confidence * 100:.0f}%")
+
+    if bundle.verification.findings:
+        findings = [
+            {
+                "级别": finding.level,
+                "代码": finding.code,
+                "说明": finding.message,
+            }
+            for finding in bundle.verification.findings
+        ]
+        st.dataframe(pd.DataFrame(findings), use_container_width=True, hide_index=True)
+
+    if score.blockers:
+        st.error("阻断项：" + "、".join(score.blockers))
+    if score.notes:
+        st.caption("评分备注：" + "；".join(score.notes))
+
+    changes = bundle.change_summary
+    if changes.has_previous:
+        if changes.key_changes:
+            st.info("相较上一期：" + "；".join(changes.key_changes[:4]))
+        if changes.cautions:
+            st.caption("历史参考提示：" + "；".join(changes.cautions[:3]))
+    else:
+        st.caption("暂无同周期历史报告，变化分析将在下一次生成后出现。")
 
 
 def render_manual_trigger():
@@ -319,7 +402,8 @@ def render_manual_trigger():
             report_gen = ReportGenerator(llm_client)
             report_period = select_report_period(snapshot.date)
             report_label = report_period_label(report_period)
-            report_text = await report_gen.generate_daily_report(analysis, report_period=report_period)
+            report_bundle = await report_gen.generate_daily_report_bundle(analysis, report_period=report_period)
+            report_text = report_bundle.text
             status.update(label="4/4 推送通知...", state="running")
 
             import os
@@ -335,15 +419,17 @@ def render_manual_trigger():
                 await nm.broadcast(report_text, title=f"投资{report_label} {snapshot.date}")
 
             status.update(label="完成!", state="complete")
-            return snapshot, portfolio, report_text, report_label
+            return snapshot, portfolio, report_bundle, report_label
 
         result = run_async(do_analysis())
-        snapshot, portfolio, report_text, report_label = result
+        snapshot, portfolio, report_bundle, report_label = result
+        report_text = report_bundle.text
 
         st.success(f"{report_label}分析完成: {snapshot.date}")
         st.metric("数据量", f"{len(snapshot.etfs)} ETFs, {len(snapshot.indices)} 指数, {len(snapshot.sectors)} 行业")
         if portfolio.total_value > 0:
             st.metric("持仓市值", f"¥{portfolio.total_value:,.0f}")
+        render_generated_report_quality(report_bundle)
         st.divider()
         st.subheader(f"📋 {report_label}内容")
         st.markdown(report_text)

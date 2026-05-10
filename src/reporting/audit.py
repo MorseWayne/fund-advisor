@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,6 +61,25 @@ class ReportAuditRecord:
     evidence_payload: dict[str, object] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ReportAuditSummary:
+    """Roll-up view of recent report quality records."""
+
+    total: int
+    latest_as_of_date: str | None = None
+    latest_report_period: str | None = None
+    latest_score: int | None = None
+    latest_grade: str | None = None
+    average_score: float | None = None
+    verification_pass_rate: float = 0.0
+    blocker_counts: dict[str, int] = field(default_factory=dict)
+    common_missing_data: dict[str, int] = field(default_factory=dict)
+    recent_scores: list[dict[str, object]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 class ReportAuditLog:
     """Write report generation records to a local JSONL audit trail."""
 
@@ -109,7 +129,60 @@ class ReportAuditLog:
             if before_date is not None and before_date != "今日" and record.as_of_date >= before_date:
                 continue
             records.append(record)
-        return records[-max(limit, 0):]
+        if limit <= 0:
+            return []
+        return records[-limit:]
+
+    def summary(
+        self,
+        limit: int = 20,
+        *,
+        report_period: str | None = None,
+    ) -> ReportAuditSummary:
+        """Summarize recent report quality records for dashboards."""
+
+        records = self.read_recent(limit=limit, report_period=report_period)
+        if not records:
+            return ReportAuditSummary(total=0)
+
+        scores = [_quality_overall(record) for record in records]
+        valid_scores = [score for score in scores if score is not None]
+        blocker_counts: Counter[str] = Counter()
+        missing_counts: Counter[str] = Counter()
+        recent_scores: list[dict[str, object]] = []
+
+        for record, score in zip(records, scores, strict=False):
+            quality = record.quality_score or {}
+            blockers = quality.get("blockers", [])
+            if isinstance(blockers, list):
+                blocker_counts.update(str(item) for item in blockers if item)
+            missing_counts.update(item for item in record.missing_data if item)
+            recent_scores.append({
+                "as_of_date": record.as_of_date,
+                "report_period": record.report_period,
+                "source": record.source,
+                "score": score,
+                "grade": _quality_grade(record),
+                "verification_passed": record.verification_passed,
+                "finding_codes": list(record.finding_codes),
+            })
+
+        latest = records[-1]
+        return ReportAuditSummary(
+            total=len(records),
+            latest_as_of_date=latest.as_of_date,
+            latest_report_period=latest.report_period,
+            latest_score=_quality_overall(latest),
+            latest_grade=_quality_grade(latest),
+            average_score=round(sum(valid_scores) / len(valid_scores), 2) if valid_scores else None,
+            verification_pass_rate=round(
+                sum(1 for record in records if record.verification_passed) / len(records),
+                2,
+            ),
+            blocker_counts=dict(blocker_counts.most_common()),
+            common_missing_data=dict(missing_counts.most_common()),
+            recent_scores=recent_scores,
+        )
 
     def latest_context(
         self,
@@ -207,6 +280,15 @@ def _int_or_none(value: object) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _quality_overall(record: ReportAuditRecord) -> int | None:
+    return _int_or_none((record.quality_score or {}).get("overall"))
+
+
+def _quality_grade(record: ReportAuditRecord) -> str | None:
+    grade = (record.quality_score or {}).get("grade")
+    return str(grade) if grade else None
 
 
 def _hash_json(value: Any) -> str:

@@ -41,6 +41,7 @@ def build_daily_report_prompt(
     analysis_result: dict[str, object],
     report_period: ReportPeriod | str | None = None,
     previous_report_context: object | None = None,
+    change_summary: object | None = None,
 ) -> tuple[str, str]:
     """Build the system and user prompts for a periodic investment report.
 
@@ -69,6 +70,9 @@ def build_daily_report_prompt(
     memory_payload = _previous_context_payload(previous_report_context)
     if memory_payload.get("has_history"):
         report_input["previous_report_context"] = memory_payload
+    change_payload = _optional_prompt_payload(change_summary)
+    if change_payload.get("has_previous"):
+        report_input["change_summary"] = change_payload
 
     user_prompt = f"""请根据以下证据包生成一份基金/ETF投资{label}。
 
@@ -81,7 +85,8 @@ def build_daily_report_prompt(
 6. 优先按照 evidence.section_briefs 中每个章节的 objective、conclusion_hint、evidence_keys 写作。
 7. 写作前先吸收 evidence.challenge_review 的反方审查：有风险或缺失数据时语气更谨慎。
 8. 如果 previous_report_context.has_history=true，可用一句话回顾上一期判断；若 usable=false，只能写成弱参考，不能强化其结论。
-9. 全文控制在300-600字，专业、简洁、不要免责声明。
+9. 如果 change_summary.has_previous=true，优先写出本期相对上一期最重要的变化；若 usable=false，只能写成弱变化提示。
+10. 全文控制在300-600字，专业、简洁、不要免责声明。
 
 证据包JSON：
 ```json
@@ -93,12 +98,20 @@ def build_daily_report_prompt(
 
 
 def _previous_context_payload(previous_report_context: object | None) -> dict[str, object]:
-    if previous_report_context is None:
-        return {"has_history": False}
-    to_prompt_payload = getattr(previous_report_context, "to_prompt_payload", None)
+    return _optional_prompt_payload(previous_report_context, default={"has_history": False})
+
+
+def _optional_prompt_payload(
+    value: object | None,
+    default: dict[str, object] | None = None,
+) -> dict[str, object]:
+    fallback = default if default is not None else {"has_previous": False}
+    if value is None:
+        return fallback
+    to_prompt_payload = getattr(value, "to_prompt_payload", None)
     if callable(to_prompt_payload):
         payload = to_prompt_payload()
-        return dict(payload) if isinstance(payload, Mapping) else {"has_history": False}
-    if isinstance(previous_report_context, Mapping):
-        return {str(key): value for key, value in previous_report_context.items()}
-    return {"has_history": False}
+        return dict(payload) if isinstance(payload, Mapping) else fallback
+    if isinstance(value, Mapping):
+        return {str(key): item for key, item in value.items()}
+    return fallback

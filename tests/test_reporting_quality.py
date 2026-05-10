@@ -8,6 +8,7 @@ from src.reporting import (
     ReportMemoryContext,
     ReportVerifier,
     append_quality_notes,
+    build_change_summary,
     build_report_evidence,
     build_memory_context,
 )
@@ -30,6 +31,19 @@ def _analysis_result():
     }
 
 
+def _previous_analysis_result():
+    analysis = _analysis_result()
+    analysis["date"] = "2026-05-03"
+    analysis["trend"] = {
+        "ma_alignment": "震荡",
+        "standing_line_ratio": 0.50,
+        "sentiment": "中性",
+        "confidence": 0.65,
+    }
+    analysis["valuation"] = {"overall_level": "合理", "pe_percentile": 40.0, "continue_sip": True}
+    return analysis
+
+
 def _six_section_report(extra: str = "") -> str:
     return f"""📊 2026-05-10 投资周报
 
@@ -50,6 +64,28 @@ PE分位数为45.00%。
 
 六、你的持仓
 组合当前收益12.00%。{extra}"""
+
+
+def _previous_six_section_report() -> str:
+    return """📊 2026-05-03 投资周报
+
+一、本周概览
+总体观望。
+
+二、方向信号
+站线比例为50.00%。
+
+三、板块机会
+暂无明确机会。
+
+四、估值温度
+PE分位数为40.00%。
+
+五、风险提醒
+暂无新增风险。
+
+六、你的持仓
+组合当前收益12.00%。"""
 
 
 def test_evidence_packet_tracks_metrics_missing_data_and_confidence():
@@ -212,6 +248,137 @@ def test_audit_log_filters_latest_context_by_period_and_date(tmp_path):
     assert not current_context.has_history
     assert future_context.has_history
     assert future_context.previous_as_of_date == "2026-05-10"
+
+
+def test_change_summary_detects_metric_and_risk_changes(tmp_path):
+    audit_log = ReportAuditLog(tmp_path / "report-audit.jsonl")
+    previous_evidence = build_report_evidence(_previous_analysis_result(), report_period="weekly")
+    previous_verification = ReportVerifier().verify(_previous_six_section_report(), previous_evidence)
+    previous_record = audit_log.append(
+        report=_previous_six_section_report(),
+        evidence=previous_evidence,
+        verification=previous_verification,
+        source="llm",
+    )
+    current_analysis = _analysis_result()
+    current_analysis["risk_alerts"] = [{"message": "主要指数波动放大"}]
+    current_evidence = build_report_evidence(current_analysis, report_period="weekly")
+
+    summary = build_change_summary(current_evidence, previous_record, build_memory_context(previous_record))
+
+    assert summary.has_previous
+    assert summary.usable
+    assert summary.new_risks == ["主要指数波动放大"]
+    assert any(change.key == "trend.standing_line_ratio" and change.delta == 12.0 for change in summary.metric_changes)
+    assert any("站线比例" in item for item in summary.key_changes)
+
+
+def test_prompt_includes_change_summary_when_previous_exists(tmp_path):
+    audit_log = ReportAuditLog(tmp_path / "report-audit.jsonl")
+    previous_evidence = build_report_evidence(_previous_analysis_result(), report_period="weekly")
+    previous_verification = ReportVerifier().verify(_previous_six_section_report(), previous_evidence)
+    previous_record = audit_log.append(
+        report=_previous_six_section_report(),
+        evidence=previous_evidence,
+        verification=previous_verification,
+        source="llm",
+    )
+    current_evidence = build_report_evidence(_analysis_result(), report_period="weekly")
+    change_summary = build_change_summary(current_evidence, previous_record, build_memory_context(previous_record))
+
+    _, user_prompt = build_daily_report_prompt(
+        _analysis_result(),
+        report_period="weekly",
+        previous_report_context=build_memory_context(previous_record),
+        change_summary=change_summary,
+    )
+
+    assert '"change_summary":' in user_prompt
+    assert "站线比例" in user_prompt
+
+
+@pytest.mark.asyncio
+async def test_report_generator_injects_change_summary_from_audit_log(tmp_path):
+    class CapturingLLM:
+        max_tokens = 4096
+
+        def __init__(self):
+            self.prompt = ""
+
+        async def generate(self, prompt, *args, **kwargs):
+            self.prompt = prompt
+            return _six_section_report()
+
+    audit_log = ReportAuditLog(tmp_path / "report-audit.jsonl")
+    previous_evidence = build_report_evidence(_previous_analysis_result(), report_period="weekly")
+    previous_verification = ReportVerifier().verify(_previous_six_section_report(), previous_evidence)
+    audit_log.append(report=_previous_six_section_report(), evidence=previous_evidence, verification=previous_verification, source="llm")
+    llm = CapturingLLM()
+
+    await ReportGenerator(llm, audit_log=audit_log).generate_daily_report(_analysis_result(), report_period="weekly")
+
+    assert '"change_summary":' in llm.prompt
+    assert "站线比例" in llm.prompt
+
+
+@pytest.mark.asyncio
+async def test_report_generator_bundle_exposes_structured_quality_context(tmp_path):
+    class StableLLM:
+        max_tokens = 4096
+
+        async def generate(self, *args, **kwargs):
+            return _six_section_report()
+
+    audit_log = ReportAuditLog(tmp_path / "report-audit.jsonl")
+
+    bundle = await ReportGenerator(StableLLM(), audit_log=audit_log).generate_daily_report_bundle(_analysis_result())
+
+    assert bundle.text.startswith("📊 2026-05-10 投资周报")
+    assert bundle.source == "llm"
+    assert bundle.evidence.as_of_date == "2026-05-10"
+    assert bundle.verification.passed
+    assert bundle.quality_score.grade == "A"
+    assert not bundle.memory_context.has_history
+    assert not bundle.change_summary.has_previous
+
+
+@pytest.mark.asyncio
+async def test_generate_daily_report_still_returns_text(tmp_path):
+    class StableLLM:
+        max_tokens = 4096
+
+        async def generate(self, *args, **kwargs):
+            return _six_section_report()
+
+    audit_log = ReportAuditLog(tmp_path / "report-audit.jsonl")
+
+    report = await ReportGenerator(StableLLM(), audit_log=audit_log).generate_daily_report(_analysis_result())
+
+    assert isinstance(report, str)
+    assert report.startswith("📊 2026-05-10 投资周报")
+
+
+def test_report_audit_summary_rolls_up_recent_quality(tmp_path):
+    audit_log = ReportAuditLog(tmp_path / "report-audit.jsonl")
+    evidence = build_report_evidence(_analysis_result())
+
+    good_report = _six_section_report()
+    good_verification = ReportVerifier().verify(good_report, evidence)
+    audit_log.append(report=good_report, evidence=evidence, verification=good_verification, source="llm")
+
+    weak_report = _six_section_report("下周收益18.00%，稳赚。")
+    weak_verification = ReportVerifier().verify(weak_report, evidence)
+    audit_log.append(report=weak_report, evidence=evidence, verification=weak_verification, source="llm")
+
+    summary = audit_log.summary(limit=10)
+
+    assert summary.total == 2
+    assert summary.latest_as_of_date == "2026-05-10"
+    assert summary.latest_grade == "D"
+    assert summary.average_score is not None
+    assert summary.verification_pass_rate == 0.5
+    assert summary.blocker_counts["absolute_advice"] == 1
+    assert summary.recent_scores[-1]["finding_codes"]
 
 
 def test_verifier_warns_when_section_body_is_empty():
