@@ -1,28 +1,23 @@
-from types import SimpleNamespace
-
 import pytest
 
 from src.llm.client import LLMClient, LLMClientError
 
 
-def test_from_config_reads_provider_specific_api_key_env(monkeypatch):
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "sf-test-key")
+def test_from_config_reads_unified_llm_api_key(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "llm-test-key")
 
-    config = SimpleNamespace(
-        provider="siliconflow",
-        model="Qwen/Qwen3-32B",
-        api_key_env="SILICONFLOW_API_KEY",
-        base_url="https://api.siliconflow.cn/v1/",
-        temperature=0.2,
-        max_tokens=512,
-    )
+    class Config:
+        provider = "siliconflow"
+        model = "Qwen/Qwen3-32B"
+        base_url = "https://api.siliconflow.cn/v1/"
+        temperature = 0.2
+        max_tokens=512
 
-    client = LLMClient.from_config(config)
+    client = LLMClient.from_config(Config())
 
     assert client.provider == "siliconflow"
     assert client.model == "Qwen/Qwen3-32B"
-    assert client.api_key_env == "SILICONFLOW_API_KEY"
-    assert client.api_key == "sf-test-key"
+    assert client.api_key == "llm-test-key"
     assert client.base_url == "https://api.siliconflow.cn/v1"
     assert client.temperature == 0.2
     assert client.max_tokens == 512
@@ -30,11 +25,10 @@ def test_from_config_reads_provider_specific_api_key_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_missing_api_key_error_names_configured_provider_and_env(monkeypatch):
-    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
     client = LLMClient(
         provider="moonshot",
         model="moonshot-v1-8k",
-        api_key_env="MOONSHOT_API_KEY",
         base_url="https://api.moonshot.cn/v1",
     )
 
@@ -43,7 +37,7 @@ async def test_missing_api_key_error_names_configured_provider_and_env(monkeypat
 
     message = str(exc_info.value)
     assert "moonshot" in message
-    assert "MOONSHOT_API_KEY" in message
+    assert "LLM_API_KEY" in message
     assert "DeepSeek" not in message
 
 

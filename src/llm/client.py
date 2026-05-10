@@ -25,15 +25,13 @@ class LLMClient:
         provider: str = "openai",
         model: str = "gpt-4o-mini",
         api_key: str | None = None,
-        api_key_env: str = "OPENAI_API_KEY",
         base_url: str = "https://api.openai.com/v1",
         temperature: float = 0.7,
         max_tokens: int = 2048,
     ) -> None:
         self.provider: str = provider
         self.model: str = model
-        self.api_key_env: str = api_key_env
-        self.api_key: str | None = api_key or os.environ.get(api_key_env)
+        self.api_key: str | None = api_key or os.environ.get("LLM_API_KEY")
         self.base_url: str = base_url.rstrip("/")
         self.temperature: float = temperature
         self.max_tokens: int = max_tokens
@@ -46,7 +44,6 @@ class LLMClient:
             provider=str(getattr(config, "provider", "openai")),
             model=str(getattr(config, "model", "gpt-4o-mini")),
             api_key=api_key,
-            api_key_env=str(getattr(config, "api_key_env", "OPENAI_API_KEY")),
             base_url=str(getattr(config, "base_url", "https://api.openai.com/v1")),
             temperature=float(getattr(config, "temperature", 0.7)),
             max_tokens=int(getattr(config, "max_tokens", 2048)),
@@ -62,7 +59,7 @@ class LLMClient:
         if not self.api_key:
             message = (
                 f"Missing API key for provider '{self.provider}': "
-                f"set {self.api_key_env} or pass api_key."
+                "set LLM_API_KEY or pass api_key."
             )
             logger.error(message)
             raise LLMClientError(message)

@@ -41,15 +41,15 @@ cd fund-advisor
 uv sync
 ```
 
-### 2. 配置 LLM API key
+### 2. 配置 `.env`
 
-默认配置使用 OpenAI-compatible endpoint：
+复制示例文件并填入本地密钥：
 
 ```bash
-export OPENAI_API_KEY=sk-xxx
+cp .env.example .env
 ```
 
-如果你使用其他供应商，先修改 `config/config.yaml` 里的 `llm` 配置，再导出对应的环境变量。详见下方“LLM Provider 配置”。
+LLM 的 provider、model、base URL、API key、temperature 和 max tokens 都在 `.env` 里配置。`.env` 会在 `load_config()` 时自动加载，且不会覆盖系统里已经导出的环境变量。
 
 ### 3. 配置持仓
 
@@ -95,72 +95,50 @@ LLM 客户端调用标准路径：
 {base_url}/chat/completions
 ```
 
-只要供应商兼容 OpenAI Chat Completions 协议，就可以通过配置接入。
+只要供应商兼容 OpenAI Chat Completions 协议，就可以通过 `.env` 接入。`config/config.yaml` 只保留日报长度、语气等业务配置。
 
 ### OpenAI
 
-```yaml
-llm:
-  provider: openai
-  model: gpt-4o-mini
-  api_key_env: OPENAI_API_KEY
-  base_url: https://api.openai.com/v1
-  temperature: 0.7
-  max_tokens: 2048
-```
-
-```bash
-export OPENAI_API_KEY=sk-xxx
+```dotenv
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=sk-xxx
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=2048
 ```
 
 ### SiliconFlow
 
-```yaml
-llm:
-  provider: siliconflow
-  model: Qwen/Qwen3-32B
-  api_key_env: SILICONFLOW_API_KEY
-  base_url: https://api.siliconflow.cn/v1
-  temperature: 0.7
-  max_tokens: 2048
-```
-
-```bash
-export SILICONFLOW_API_KEY=sk-xxx
+```dotenv
+LLM_PROVIDER=siliconflow
+LLM_MODEL=Qwen/Qwen3-32B
+LLM_BASE_URL=https://api.siliconflow.cn/v1
+LLM_API_KEY=sk-xxx
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=2048
 ```
 
 ### Moonshot
 
-```yaml
-llm:
-  provider: moonshot
-  model: moonshot-v1-8k
-  api_key_env: MOONSHOT_API_KEY
-  base_url: https://api.moonshot.cn/v1
-  temperature: 0.7
-  max_tokens: 2048
-```
-
-```bash
-export MOONSHOT_API_KEY=sk-xxx
+```dotenv
+LLM_PROVIDER=moonshot
+LLM_MODEL=moonshot-v1-8k
+LLM_BASE_URL=https://api.moonshot.cn/v1
+LLM_API_KEY=sk-xxx
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=2048
 ```
 
 ### 本地 OpenAI-compatible 服务
 
-```yaml
-llm:
-  provider: local
-  model: qwen2.5:7b
-  api_key_env: LOCAL_LLM_API_KEY
-  base_url: http://localhost:8000/v1
-  temperature: 0.7
-  max_tokens: 2048
-```
-
-如果本地服务不校验 key，也可以随便给一个占位值：
-
-```bash
-export LOCAL_LLM_API_KEY=local
+```dotenv
+LLM_PROVIDER=local
+LLM_MODEL=qwen2.5:7b
+LLM_BASE_URL=http://localhost:8000/v1
+LLM_API_KEY=local
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=2048
 ```
 
 ## 持仓配置
@@ -243,13 +221,18 @@ notify:
   feishu:
     enabled: false
     webhook_url_env: FEISHU_WEBHOOK_URL
+
+llm:
+  report:
+    max_length_chars: 800
+    tone: "专业简洁"
 ```
 
-推送通道默认关闭。开启后需要设置对应 webhook 环境变量：
+推送通道默认关闭。开启后需要在 `.env` 中设置对应 webhook 变量：
 
 ```bash
-export WECHAT_WORK_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
-export FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+WECHAT_WORK_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
 ```
 
 ## 项目结构
@@ -301,7 +284,12 @@ WorkingDirectory=/home/ubuntu/fund-advisor
 ExecStart=/usr/local/bin/uv run python main.py scheduler
 Restart=always
 RestartSec=10
-Environment=OPENAI_API_KEY=sk-xxx
+Environment=LLM_PROVIDER=openai
+Environment=LLM_MODEL=gpt-4o-mini
+Environment=LLM_BASE_URL=https://api.openai.com/v1
+Environment=LLM_API_KEY=sk-xxx
+Environment=LLM_TEMPERATURE=0.7
+Environment=LLM_MAX_TOKENS=2048
 Environment=WECHAT_WORK_WEBHOOK_URL=https://...
 
 [Install]

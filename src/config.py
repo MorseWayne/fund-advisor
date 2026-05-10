@@ -2,7 +2,9 @@
 
 from pathlib import Path
 from typing import Any
+import os
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel
 
 
@@ -53,7 +55,6 @@ class LLMReportConfig(BaseModel):
 class LLMConfig(BaseModel):
     provider: str = "openai"
     model: str = "gpt-4o-mini"
-    api_key_env: str = "OPENAI_API_KEY"
     base_url: str = "https://api.openai.com/v1"
     temperature: float = 0.7
     max_tokens: int = 2048
@@ -108,11 +109,32 @@ class AppConfig(BaseModel):
 
 def load_config(config_path: str | Path = "config/config.yaml") -> AppConfig:
     """Load and validate configuration from YAML file."""
+    load_dotenv(dotenv_path=Path(".env"))
+
     path = Path(config_path)
     if not path.exists():
-        return AppConfig()
+        return AppConfig(**_apply_env_overrides({}))
 
     with open(path, "r", encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
 
-    return AppConfig(**raw)
+    return AppConfig(**_apply_env_overrides(raw))
+
+
+def _apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
+    """Apply deployment-oriented environment overrides to config data."""
+    merged = dict(raw)
+    llm = dict(merged.get("llm") or {})
+    env_map = {
+        "provider": os.getenv("LLM_PROVIDER"),
+        "model": os.getenv("LLM_MODEL"),
+        "base_url": os.getenv("LLM_BASE_URL"),
+        "temperature": os.getenv("LLM_TEMPERATURE"),
+        "max_tokens": os.getenv("LLM_MAX_TOKENS"),
+    }
+    for key, value in env_map.items():
+        if value not in (None, ""):
+            llm[key] = value
+    if llm:
+        merged["llm"] = llm
+    return merged

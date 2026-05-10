@@ -54,13 +54,6 @@ analysis:
 # LLM配置
 # ---------------------------------------------------------------------------
 llm:
-  provider: openai               # 任意 OpenAI-compatible provider 名称，仅用于日志
-  model: gpt-4o-mini
-  api_key_env: OPENAI_API_KEY    # 从环境变量读取
-  base_url: https://api.openai.com/v1
-  temperature: 0.7
-  max_tokens: 2048
-
   # 日报生成
   report:
     max_length_chars: 800        # 日报最大长度(字符)
