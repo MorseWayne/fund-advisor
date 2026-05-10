@@ -19,6 +19,7 @@ from src.llm.report_period import (
 from src.reporting import (
     ReportAuditLog,
     ReportEvidence,
+    ReportMemoryContext,
     ReportVerifier,
     VerificationResult,
     append_quality_notes,
@@ -58,7 +59,12 @@ class ReportGenerator:
         period = normalize_report_period(report_period) if report_period is not None else select_report_period((analysis_result or {}).get("date"))
         label = report_period_label(period)
         logger.info("Building {} prompts", label)
-        system_prompt, user_prompt = build_daily_report_prompt(analysis_result, report_period=period)
+        previous_context = self._load_previous_context(analysis_result, period)
+        system_prompt, user_prompt = build_daily_report_prompt(
+            analysis_result,
+            report_period=period,
+            previous_report_context=previous_context,
+        )
 
         try:
             logger.info("Calling LLM for {} generation", label)
@@ -116,6 +122,20 @@ class ReportGenerator:
             self.audit_log.append(report=report, evidence=evidence, verification=result, source=source)
         except Exception:
             logger.exception("Failed to write report audit record")
+
+    def _load_previous_context(
+        self,
+        analysis_result: dict[str, object],
+        report_period: ReportPeriod | str,
+    ) -> ReportMemoryContext:
+        """Load previous report context without blocking generation."""
+
+        try:
+            date = str((analysis_result or {}).get("date") or "")
+            return self.audit_log.latest_context(report_period=normalize_report_period(report_period), before_date=date)
+        except Exception:
+            logger.exception("Failed to load previous report context")
+            return ReportMemoryContext(has_history=False, summary="历史报告读取失败。")
 
     def _build_fallback_report(
         self,

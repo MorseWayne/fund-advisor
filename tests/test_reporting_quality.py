@@ -2,7 +2,15 @@ import pytest
 
 from src.llm.prompts import build_daily_report_prompt
 from src.llm.report_generator import ReportGenerator
-from src.reporting import ReportAuditLog, ReportVerifier, append_quality_notes, build_report_evidence
+from src.reporting import (
+    ReportAuditLog,
+    ReportEvaluator,
+    ReportMemoryContext,
+    ReportVerifier,
+    append_quality_notes,
+    build_report_evidence,
+    build_memory_context,
+)
 
 
 def _analysis_result():
@@ -104,6 +112,34 @@ def test_daily_prompt_includes_challenge_review_payload():
     assert "不得承诺收益" in user_prompt
 
 
+def test_daily_prompt_includes_usable_previous_report_context():
+    _, user_prompt = build_daily_report_prompt(
+        _analysis_result(),
+        previous_report_context=ReportMemoryContext(
+            has_history=True,
+            usable=True,
+            previous_as_of_date="2026-05-03",
+            previous_report_period="weekly",
+            quality_grade="A",
+            quality_score=96,
+            summary="上一期周报日期为2026-05-03，质量为A/96，可作为弱复盘依据。",
+        ),
+    )
+
+    assert "previous_report_context" in user_prompt
+    assert "2026-05-03" in user_prompt
+    assert "usable" in user_prompt
+
+
+def test_daily_prompt_omits_previous_report_context_without_history():
+    _, user_prompt = build_daily_report_prompt(
+        _analysis_result(),
+        previous_report_context=ReportMemoryContext(has_history=False),
+    )
+
+    assert '"previous_report_context":' not in user_prompt
+
+
 def test_verifier_accepts_supported_percent_claims():
     evidence = build_report_evidence(_analysis_result())
 
@@ -121,6 +157,61 @@ def test_verifier_flags_unsupported_percent_and_absolute_advice():
     assert not result.passed
     assert {finding.code for finding in result.findings} >= {"unsupported_numeric_claim", "absolute_advice"}
     assert "数据质量提示" in append_quality_notes(_six_section_report("下周收益18.00%。"), result)
+
+
+def test_report_evaluator_blocks_unsupported_numbers_and_absolute_advice():
+    evidence = build_report_evidence(_analysis_result())
+    report = _six_section_report("下周收益18.00%，稳赚。")
+    verification = ReportVerifier().verify(report, evidence)
+
+    score = ReportEvaluator().evaluate(report, evidence, verification)
+
+    assert score.overall < 60
+    assert score.grade == "D"
+    assert score.blockers == ["unsupported_numeric_claim", "absolute_advice"]
+    assert score.components["numeric_trace"] == 0
+    assert score.components["action_safety"] == 0
+
+
+def test_report_evaluator_scores_grounded_report_highly():
+    evidence = build_report_evidence(_analysis_result())
+    report = _six_section_report()
+    verification = ReportVerifier().verify(report, evidence)
+
+    score = ReportEvaluator().evaluate(report, evidence, verification)
+
+    assert score.overall >= 90
+    assert score.grade == "A"
+    assert not score.blockers
+
+
+def test_audit_log_builds_memory_context_from_previous_record(tmp_path):
+    evidence = build_report_evidence(_analysis_result())
+    verification = ReportVerifier().verify(_six_section_report(), evidence)
+    audit_log = ReportAuditLog(tmp_path / "report-audit.jsonl")
+    record = audit_log.append(report=_six_section_report(), evidence=evidence, verification=verification, source="llm")
+
+    context = build_memory_context(record)
+
+    assert context.has_history
+    assert context.usable
+    assert context.previous_as_of_date == "2026-05-10"
+    assert context.quality_grade == "A"
+    assert "上一期" in context.summary
+
+
+def test_audit_log_filters_latest_context_by_period_and_date(tmp_path):
+    audit_log = ReportAuditLog(tmp_path / "report-audit.jsonl")
+    evidence = build_report_evidence(_analysis_result(), report_period="weekly")
+    verification = ReportVerifier().verify(_six_section_report(), evidence)
+    audit_log.append(report=_six_section_report(), evidence=evidence, verification=verification, source="llm")
+
+    current_context = audit_log.latest_context(report_period="weekly", before_date="2026-05-10")
+    future_context = audit_log.latest_context(report_period="weekly", before_date="2026-05-17")
+
+    assert not current_context.has_history
+    assert future_context.has_history
+    assert future_context.previous_as_of_date == "2026-05-10"
 
 
 def test_verifier_warns_when_section_body_is_empty():
@@ -176,4 +267,5 @@ async def test_report_generator_writes_audit_record(tmp_path):
     assert records[0].as_of_date == "2026-05-10"
     assert records[0].challenge_posture == "balanced"
     assert records[0].verification_passed
+    assert records[0].quality_score["grade"] == "A"
     assert records[0].report_hash

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 from src.llm.report_period import (
     ReportPeriod,
@@ -39,6 +40,7 @@ REPORT_SYSTEM_PROMPT_TEMPLATE = """你是个人基金ETF投资建议系统的{re
 def build_daily_report_prompt(
     analysis_result: dict[str, object],
     report_period: ReportPeriod | str | None = None,
+    previous_report_context: object | None = None,
 ) -> tuple[str, str]:
     """Build the system and user prompts for a periodic investment report.
 
@@ -64,6 +66,9 @@ def build_daily_report_prompt(
         "report_scope": scope,
         "evidence": evidence.to_prompt_payload(),
     }
+    memory_payload = _previous_context_payload(previous_report_context)
+    if memory_payload.get("has_history"):
+        report_input["previous_report_context"] = memory_payload
 
     user_prompt = f"""请根据以下证据包生成一份基金/ETF投资{label}。
 
@@ -75,7 +80,8 @@ def build_daily_report_prompt(
 5. 如果没有历史聚合数据，持仓收益使用当前收益和最新涨跌，不编造{scope}累计收益。
 6. 优先按照 evidence.section_briefs 中每个章节的 objective、conclusion_hint、evidence_keys 写作。
 7. 写作前先吸收 evidence.challenge_review 的反方审查：有风险或缺失数据时语气更谨慎。
-8. 全文控制在300-600字，专业、简洁、不要免责声明。
+8. 如果 previous_report_context.has_history=true，可用一句话回顾上一期判断；若 usable=false，只能写成弱参考，不能强化其结论。
+9. 全文控制在300-600字，专业、简洁、不要免责声明。
 
 证据包JSON：
 ```json
@@ -84,3 +90,15 @@ def build_daily_report_prompt(
 """.strip()
 
     return system_prompt, user_prompt
+
+
+def _previous_context_payload(previous_report_context: object | None) -> dict[str, object]:
+    if previous_report_context is None:
+        return {"has_history": False}
+    to_prompt_payload = getattr(previous_report_context, "to_prompt_payload", None)
+    if callable(to_prompt_payload):
+        payload = to_prompt_payload()
+        return dict(payload) if isinstance(payload, Mapping) else {"has_history": False}
+    if isinstance(previous_report_context, Mapping):
+        return {str(key): value for key, value in previous_report_context.items()}
+    return {"has_history": False}
