@@ -367,6 +367,12 @@ def render_generated_report_quality(bundle):
 
 def render_manual_trigger():
     st.header("手动触发即时分析")
+
+    period_choice = st.selectbox(
+        "分析窗口",
+        options=["auto", "daily", "weekly", "monthly"],
+        format_func=lambda p: {"auto": "自动选择", "daily": "日报", "weekly": "周报", "monthly": "月报"}[p],
+    )
     st.write("点击下方按钮触发数据采集 → 指标计算 → LLM报告生成 → 推送")
 
     if st.button("🚀 立即分析", type="primary", use_container_width=True):
@@ -382,8 +388,18 @@ def render_manual_trigger():
             status.update(label="2/4 计算指标...", state="running")
 
             from src.analysis.engine import AnalysisEngine
-            engine = AnalysisEngine()
-            analysis = engine.analyze(asdict(snapshot))
+            from src.analysis.aggregator import build_window_snapshot
+            from src.llm.report_period import normalize_report_period, report_period_label, select_report_period, ReportPeriod
+
+            report_period: ReportPeriod = "daily"
+            if period_choice == "auto":
+                report_period = select_report_period(snapshot.date)
+            else:
+                report_period = normalize_report_period(period_choice)
+
+            window_overrides = build_window_snapshot(pipeline.db, str(snapshot.date), report_period)
+            engine = AnalysisEngine(db=pipeline.db)
+            analysis = engine.analyze(asdict(snapshot), window_snapshot=window_overrides)
             analysis["portfolio_status"] = {
                 "holdings": [{"code": h.code, "name": h.name, "current_price": h.current_price,
                                "change_pct": h.change_pct, "profit_loss_pct": h.profit_loss_pct,
@@ -397,10 +413,8 @@ def render_manual_trigger():
 
             from src.llm.client import LLMClient
             from src.llm.report_generator import ReportGenerator
-            from src.llm.report_period import report_period_label, select_report_period
             llm_client = LLMClient.from_config(config.llm)
             report_gen = ReportGenerator(llm_client)
-            report_period = select_report_period(snapshot.date)
             report_label = report_period_label(report_period)
             report_bundle = await report_gen.generate_daily_report_bundle(analysis, report_period=report_period)
             report_text = report_bundle.text

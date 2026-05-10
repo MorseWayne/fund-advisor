@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from src.config import load_config
 from src.data.pipeline import DataPipeline
 from src.analysis.engine import AnalysisEngine
+from src.analysis.aggregator import build_window_snapshot
 from src.llm.client import LLMClient
 from src.llm.report_generator import ReportGenerator
 from src.llm.report_period import report_period_english_label, report_period_label, select_report_period
@@ -50,8 +51,10 @@ async def run_once():
     snapshot = await pipeline.run_daily_collection()
     portfolio = pipeline.calc_holding_status(snapshot)
 
-    engine = AnalysisEngine()
-    analysis = engine.analyze(snapshot)
+    engine = AnalysisEngine(db=pipeline.db)
+    report_period = select_report_period(snapshot.date)
+    window_overrides = build_window_snapshot(pipeline.db, str(snapshot.date), report_period)
+    analysis = engine.analyze(snapshot, window_snapshot=window_overrides)
     analysis["portfolio_status"] = {
         "holdings": [{"code": h.code, "name": h.name, "current_price": h.current_price,
                        "change_pct": h.change_pct, "profit_loss_pct": h.profit_loss_pct,
@@ -64,7 +67,6 @@ async def run_once():
 
     llm_client = LLMClient.from_config(config.llm)
     report_gen = ReportGenerator(llm_client)
-    report_period = select_report_period(snapshot.date)
     report_label = report_period_label(report_period)
     report_text = await report_gen.generate_daily_report(analysis, report_period=report_period)
 
@@ -105,8 +107,10 @@ async def run_scheduled():
         try:
             snapshot = await pipeline.run_daily_collection()
             portfolio = pipeline.calc_holding_status(snapshot)
-            engine = AnalysisEngine()
-            analysis = engine.analyze(snapshot)
+            engine = AnalysisEngine(db=pipeline.db)
+            report_period = select_report_period(snapshot.date)
+            window_overrides = build_window_snapshot(pipeline.db, str(snapshot.date), report_period)
+            analysis = engine.analyze(snapshot, window_snapshot=window_overrides)
             analysis["portfolio_status"] = {
                 "holdings": [{"code": h.code, "name": h.name, "current_price": h.current_price,
                                "change_pct": h.change_pct, "profit_loss_pct": h.profit_loss_pct,
@@ -118,7 +122,6 @@ async def run_scheduled():
             }
             llm_client = LLMClient.from_config(config.llm)
             report_gen = ReportGenerator(llm_client)
-            report_period = select_report_period(snapshot.date)
             report_label = report_period_label(report_period)
             report_text = await report_gen.generate_daily_report(analysis, report_period=report_period)
             if nm.channels:

@@ -36,6 +36,7 @@ from src.analysis.valuation import (
     calc_pe_percentile,
     detect_etf_premium_alerts,
 )
+from src.analysis.aggregator import apply_window_changes
 
 
 DEFAULT_ANALYSIS_CONFIG: dict[str, Any] = {
@@ -56,11 +57,14 @@ class AnalysisEngine:
         self.config: dict[str, Any] = _deep_merge(DEFAULT_ANALYSIS_CONFIG, dict(config or {}))
         self.db = db
 
-    def analyze(self, snapshot: Any) -> dict[str, Any]:
+    def analyze(self, snapshot: Any, *, window_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
         """Run all indicator modules against a processed market snapshot.
 
         Missing inputs produce ``None`` metrics rather than exceptions. The return
         value uses plain dictionaries/lists and avoids Pydantic/dataclass models.
+
+        If *window_snapshot* is provided, daily ``change_pct`` values on indices
+        and ETFs are replaced with window-aggregated changes (e.g. weekly return).
         """
 
         snapshot = _record(snapshot)
@@ -73,6 +77,9 @@ class AnalysisEngine:
         valuation_input = _record(snapshot.get("valuation"))
         precious_metals = _record(snapshot.get("precious_metals"))
         news = _news_headlines(snapshot)
+
+        if window_snapshot:
+            apply_window_changes(indices, etfs, window_snapshot)
 
         if self.db is not None:
             self._load_history_from_db(snapshot, indices, etfs)
