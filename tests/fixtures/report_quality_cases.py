@@ -21,7 +21,13 @@ class ReportQualityCase:
 def base_analysis() -> dict[str, object]:
     return {
         "date": "2026-05-10",
-        "overview": {"direction": "观望", "summary": "市场震荡", "key_events": []},
+        "overview": {
+            "direction": "观望",
+            "summary": "市场震荡",
+            "key_events": [],
+            "index_snapshot": [],
+            "market_breadth": {},
+        },
         "trend": {
             "ma_alignment": "多头排列",
             "standing_line_ratio": 0.62,

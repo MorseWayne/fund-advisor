@@ -253,9 +253,37 @@ class ReportGenerator:
 def _overview_text(overview: Mapping[str, object]) -> str:
     direction = overview.get("direction") or "观望"
     summary = overview.get("summary") or "暂无完整市场概览数据"
+    lines: list[str] = [f"总体判断：{direction}。{summary}。"]
+
+    index_snapshot = overview.get("index_snapshot")
+    if isinstance(index_snapshot, list) and index_snapshot:
+        idx_parts: list[str] = []
+        for idx in index_snapshot:
+            if isinstance(idx, Mapping):
+                name = idx.get("name") or idx.get("code") or "指数"
+                change = idx.get("change_pct")
+                if change is not None:
+                    idx_parts.append(f"{name}{_format_percent(change)}")
+        if idx_parts:
+            lines.append("主要指数：" + "，".join(idx_parts) + "。")
+
+    breadth = overview.get("market_breadth")
+    if isinstance(breadth, dict) and breadth.get("total"):
+        lines.append(f"市场宽度：{breadth.get('total')}个板块中{breadth.get('up')}涨{breadth.get('down')}跌。")
+
+    fund_flow = overview.get("fund_flow_direction")
+    if fund_flow == "north_inflow":
+        lines.append("北向资金：净流入。")
+    elif fund_flow == "north_outflow":
+        lines.append("北向资金：净流出。")
+
     key_events = _as_sequence(overview.get("key_events"))
-    events_text = "；".join(str(event) for event in key_events[:3]) if key_events else "暂无关键事件"
-    return f"总体判断：{direction}。{summary}。关键事件：{events_text}。"
+    if key_events:
+        events_text = "；".join(str(event) for event in key_events[:3])
+        lines.append(f"关键事件：{events_text}。")
+    else:
+        lines.append("关键事件：暂无。")
+    return "".join(lines)
 
 
 def _trend_text(trend: Mapping[str, object]) -> str:

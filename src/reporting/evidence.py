@@ -151,6 +151,19 @@ def build_report_evidence(
 def _collect_metrics(sections: Mapping[str, object], as_of: str) -> list[EvidenceMetric]:
     metrics: list[EvidenceMetric] = []
 
+    overview = _record(sections.get("overview"))
+    index_snapshot = overview.get("index_snapshot")
+    if isinstance(index_snapshot, list):
+        for idx_data in index_snapshot:
+            if isinstance(idx_data, dict):
+                name = str(idx_data.get("name") or idx_data.get("code") or "指数")
+                code = str(idx_data.get("code") or "")
+                label = f"{name}涨跌" if name else f"指数{code}涨跌"
+                _add_metric(metrics, f"overview.index.{code}_change_pct", label, idx_data.get("change_pct"), f"sections.overview.index_snapshot.{code}.change_pct", as_of, "percent")
+    breadth = overview.get("market_breadth")
+    if isinstance(breadth, dict):
+        _add_metric(metrics, "overview.up_pct", "上涨板块占比", breadth.get("up_pct"), "sections.overview.market_breadth.up_pct", as_of, "percent")
+
     trend = _record(sections.get("trend"))
     _add_metric(metrics, "trend.standing_line_ratio", "站线比例", trend.get("standing_line_ratio"), "sections.trend.standing_line_ratio", as_of, "percent")
     _add_metric(metrics, "trend.sentiment_score", "情绪分数", trend.get("sentiment_score"), "sections.trend.sentiment_score", as_of)
@@ -197,9 +210,9 @@ def _build_section_briefs(
         ReportSectionBrief(
             key="overview",
             title=f"一、{scope}概览",
-            objective="用一句结论说明市场状态，再解释关键事件和进攻/防守/观望判断。",
-            conclusion_hint=str(overview.get("direction") or "观望"),
-            evidence_keys=_metric_keys(metrics, ()),
+            objective="先列主要指数涨跌和成交量变化，再报关键事件2-3条（从key_events提取），后给总体判断（进攻/防守/观望）并简述理由。有市场宽度（上涨板块占比）和资金流向时一并说明。",
+            conclusion_hint=_overview_conclusion_hint(overview),
+            evidence_keys=_metric_keys(metrics, ("overview.",)),
             missing_data=_missing_for(missing_data, "overview"),
             risk_notes=risk_flags[:2],
         ),
@@ -249,6 +262,21 @@ def _build_section_briefs(
             risk_notes=[],
         ),
     ]
+
+
+def _overview_conclusion_hint(overview: Mapping[str, object]) -> str:
+    direction = str(overview.get("direction") or "观望")
+    parts: list[str] = [f"总体{direction}"]
+    breadth = overview.get("market_breadth")
+    if isinstance(breadth, dict):
+        up = breadth.get("up")
+        down = breadth.get("down")
+        if up is not None and down is not None:
+            parts.append(f"{up}涨{down}跌")
+    events = overview.get("key_events")
+    if isinstance(events, list) and events:
+        parts.append(f"{len(events)}条关键事件")
+    return "，".join(parts)
 
 
 def _metric_keys(metrics: Sequence[EvidenceMetric], prefixes: Sequence[str]) -> list[str]:

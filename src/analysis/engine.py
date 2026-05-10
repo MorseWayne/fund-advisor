@@ -72,6 +72,7 @@ class AnalysisEngine:
         macro = _record(snapshot.get("macro"))
         valuation_input = _record(snapshot.get("valuation"))
         precious_metals = _record(snapshot.get("precious_metals"))
+        news = _news_headlines(snapshot)
 
         if self.db is not None:
             self._load_history_from_db(snapshot, indices, etfs)
@@ -82,7 +83,7 @@ class AnalysisEngine:
         risk_alerts, risk_metrics = self._analyze_risk(snapshot, indices, etfs)
         gold_result = self._analyze_precious_metals(precious_metals)
 
-        overview = self._build_overview(trend_result, valuation_result, risk_alerts)
+        overview = self._build_overview(indices, sectors, fund_flows, news, trend_result, valuation_result, risk_alerts)
         sector_opportunities = self._build_sector_opportunities(rotation_result.get("momentum_ranking"))
 
         return {
@@ -283,7 +284,12 @@ class AnalysisEngine:
         }
 
     @staticmethod
+    @staticmethod
     def _build_overview(
+        indices: list[dict[str, Any]],
+        sectors: list[dict[str, Any]],
+        fund_flows: Mapping[str, Any],
+        news: list[str],
         trend_result: Mapping[str, Any],
         valuation_result: Mapping[str, Any],
         risk_alerts: Sequence[Mapping[str, Any]],
@@ -310,7 +316,19 @@ class AnalysisEngine:
             parts.append(f"触发{len(risk_alerts)}项风险提示")
         summary = "，".join(parts) if parts else "数据不足，维持观望。"
 
-        return {"summary": summary, "direction": direction, "key_events": []}
+        index_snapshot = _build_index_snapshot(indices)
+        market_breadth = _build_market_breadth(sectors)
+        fund_flow_direction = _build_fund_flow_direction(fund_flows)
+        key_events = news[:3] if news else []
+
+        return {
+            "summary": summary,
+            "direction": direction,
+            "key_events": key_events,
+            "index_snapshot": index_snapshot,
+            "market_breadth": market_breadth,
+            "fund_flow_direction": fund_flow_direction,
+        }
 
     @staticmethod
     def _build_sector_opportunities(momentum_ranking: Any) -> list[dict[str, Any]]:
@@ -582,6 +600,76 @@ def _advance_decline_ratio(macro: Mapping[str, Any], etfs: list[dict[str, Any]])
     if advances == 0 and declines == 0:
         return None
     return advances / max(declines, 1)
+
+
+_KEY_INDEX_CODES = {"sh000300", "000300", "399006", "sh000001", "399001"}
+
+
+def _news_headlines(snapshot: Mapping[str, Any]) -> list[str]:
+    raw = snapshot.get("news_headlines")
+    if isinstance(raw, list):
+        return [str(item) for item in raw if item]
+    return []
+
+
+def _build_index_snapshot(indices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not indices:
+        return []
+
+    key_map: dict[str, dict[str, Any]] = {}
+    for idx in indices:
+        code = str(idx.get("code") or "")
+        if code in _KEY_INDEX_CODES:
+            key_map[code] = idx
+
+    result: list[dict[str, Any]] = []
+    for code in _KEY_INDEX_CODES:
+        if code in key_map:
+            result.append(_compact_index(key_map[code]))
+
+    if not result:
+        for idx in indices[:3]:
+            result.append(_compact_index(idx))
+    return result
+
+
+def _compact_index(idx: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "code": idx.get("code"),
+        "name": idx.get("name"),
+        "price": idx.get("price"),
+        "change_pct": idx.get("change_pct"),
+        "pe_ratio": idx.get("pe_ratio"),
+    }
+
+
+def _build_market_breadth(sectors: list[dict[str, Any]]) -> dict[str, Any]:
+    if not sectors:
+        return {}
+    up = 0
+    down = 0
+    for s in sectors:
+        change = _as_number(s.get("change_pct"))
+        if change is None:
+            continue
+        if change > 0:
+            up += 1
+        elif change < 0:
+            down += 1
+    total = len(sectors)
+    up_pct = round(up / total * 100, 1) if total > 0 else 0
+    return {"total": total, "up": up, "down": down, "up_pct": up_pct}
+
+
+def _build_fund_flow_direction(fund_flows: Mapping[str, Any]) -> str | None:
+    nb = _as_number(fund_flows.get("north_bound"))
+    if nb is None:
+        return None
+    if nb > 0:
+        return "north_inflow"
+    if nb < 0:
+        return "north_outflow"
+    return "north_flat"
 
 
 def _returns_from_snapshot(snapshot: Mapping[str, Any], etfs: list[dict[str, Any]]) -> dict[str, list[float]]:
