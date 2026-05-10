@@ -2,7 +2,7 @@ import pytest
 
 from src.llm.prompts import build_daily_report_prompt
 from src.llm.report_generator import ReportGenerator
-from src.reporting import ReportVerifier, append_quality_notes, build_report_evidence
+from src.reporting import ReportAuditLog, ReportVerifier, append_quality_notes, build_report_evidence
 
 
 def _analysis_result():
@@ -144,14 +144,36 @@ PE分位数为45.00%。
 
 
 @pytest.mark.asyncio
-async def test_report_generator_appends_quality_notes_to_llm_output():
+async def test_report_generator_appends_quality_notes_to_llm_output(tmp_path):
     class LLMWithUnsupportedClaim:
         max_tokens = 4096
 
         async def generate(self, *args, **kwargs):
             return _six_section_report("下周收益18.00%。")
 
-    report = await ReportGenerator(LLMWithUnsupportedClaim()).generate_daily_report(_analysis_result())
+    audit_log = ReportAuditLog(tmp_path / "report-audit.jsonl")
+    report = await ReportGenerator(LLMWithUnsupportedClaim(), audit_log=audit_log).generate_daily_report(_analysis_result())
 
     assert "数据质量提示" in report
     assert "18.00%" in report
+
+
+@pytest.mark.asyncio
+async def test_report_generator_writes_audit_record(tmp_path):
+    class StableLLM:
+        max_tokens = 4096
+
+        async def generate(self, *args, **kwargs):
+            return _six_section_report()
+
+    audit_log = ReportAuditLog(tmp_path / "report-audit.jsonl")
+
+    await ReportGenerator(StableLLM(), audit_log=audit_log).generate_daily_report(_analysis_result())
+
+    records = audit_log.read_recent(limit=1)
+    assert len(records) == 1
+    assert records[0].source == "llm"
+    assert records[0].as_of_date == "2026-05-10"
+    assert records[0].challenge_posture == "balanced"
+    assert records[0].verification_passed
+    assert records[0].report_hash

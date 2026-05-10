@@ -54,6 +54,7 @@ ENV/
 *.log
 data/logs/
 data/*.db
+data/reports/
 
 # --- Project: Config (local overrides) ---
 config/config.local.yaml

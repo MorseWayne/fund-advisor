@@ -1,5 +1,6 @@
 """Report-quality helpers for evidence-first investment reports."""
 
+from src.reporting.audit import ReportAuditLog, ReportAuditRecord, build_audit_record
 from src.reporting.evidence import (
     EvidenceMetric,
     ReportChallengeReview,
@@ -11,6 +12,8 @@ from src.reporting.verifier import ReportVerifier, VerificationFinding, Verifica
 
 __all__ = [
     "EvidenceMetric",
+    "ReportAuditLog",
+    "ReportAuditRecord",
     "ReportEvidence",
     "ReportChallengeReview",
     "ReportSectionBrief",
@@ -18,5 +21,6 @@ __all__ = [
     "VerificationFinding",
     "VerificationResult",
     "append_quality_notes",
+    "build_audit_record",
     "build_report_evidence",
 ]
