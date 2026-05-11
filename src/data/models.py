@@ -19,6 +19,7 @@ class HoldingCategory(str, Enum):
     THEME = "theme"
     OVERSEAS = "overseas"
     BOND = "bond"
+    COMMODITY = "commodity"
 
 
 class SignalDirection(str, Enum):

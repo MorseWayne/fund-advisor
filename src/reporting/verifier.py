@@ -10,6 +10,7 @@ from src.reporting.evidence import ReportEvidence
 
 PERCENT_RE = re.compile(r"([-+]?\d+(?:\.\d+)?)\s*%")
 ABSOLUTE_ADVICE_PATTERNS = ("必涨", "稳赚", "保证收益", "无风险", "满仓买入", "绝对安全")
+NEGATIVE_PERCENT_CONTEXT = ("跌", "下跌", "下降", "回落", "减少", "亏损", "流出", "折价")
 
 
 @dataclass(frozen=True)
@@ -130,7 +131,7 @@ class ReportVerifier:
         evidence: ReportEvidence,
         findings: list[VerificationFinding],
     ) -> None:
-        reported = [float(match.group(1)) for match in PERCENT_RE.finditer(report)]
+        reported = _reported_percent_values(report)
         if not reported:
             return
 
@@ -167,3 +168,16 @@ def _score_confidence(base: float, findings: list[VerificationFinding]) -> float
     for finding in findings:
         score -= 0.15 if finding.level == "error" else 0.05
     return max(0.1, min(0.95, score))
+
+
+def _reported_percent_values(report: str) -> list[float]:
+    values: list[float] = []
+    for match in PERCENT_RE.finditer(report or ""):
+        raw = match.group(1)
+        value = float(raw)
+        if value >= 0 and not raw.startswith("+"):
+            context = report[max(0, match.start() - 8):match.start()]
+            if any(token in context for token in NEGATIVE_PERCENT_CONTEXT):
+                value = -value
+        values.append(value)
+    return values

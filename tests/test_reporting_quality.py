@@ -195,6 +195,57 @@ def test_verifier_flags_unsupported_percent_and_absolute_advice():
     assert "数据质量提示" in append_quality_notes(_six_section_report("下周收益18.00%。"), result)
 
 
+def test_verifier_accepts_precious_metals_risk_flags_and_suggestion_thresholds():
+    analysis = _analysis_result()
+    analysis["precious_metals"] = {
+        "gold_spot_price": 1038.9,
+        "gold_spot_change_5d": 0.12,
+        "comex_gold_change_pct": 0.26,
+        "gold_concept_change_pct": -1.78,
+    }
+    analysis["risk_alerts"] = [
+        {"message": "Nikkei 225 单日涨跌幅 -0.19% 超过阈值", "affected_assets": ["^N225"]}
+    ]
+    analysis["portfolio_status"] = {
+        "total_change_pct": 16.5884,
+        "total_profit_loss": 23315.0,
+        "holdings": [
+            {
+                "code": "510300",
+                "name": "沪深300ETF",
+                "change_pct": -0.0053,
+                "profit_loss_pct": 26.909,
+                "suggestion": "盈利超15%，可考虑分批止盈",
+            }
+        ],
+    }
+    evidence = build_report_evidence(analysis)
+    report = """📊 2026-05-10 投资周报
+
+一、本周概览
+总体防守。
+
+二、方向信号
+站线比例为62.00%。
+
+三、板块机会
+黄金现货5日涨0.12%，COMEX金涨0.26%，但黄金概念跌1.78%。
+
+四、估值温度
+PE分位数为45.00%。
+
+五、风险提醒
+Nikkei 225 跌0.19%，需关注异常波动。
+
+六、你的持仓
+组合收益16.59%，沪深300ETF盈利26.91%，盈利超15%可分批止盈。"""
+
+    result = ReportVerifier().verify(report, evidence)
+
+    assert result.passed
+    assert not [finding for finding in result.findings if finding.code == "unsupported_numeric_claim"]
+
+
 def test_report_evaluator_blocks_unsupported_numbers_and_absolute_advice():
     evidence = build_report_evidence(_analysis_result())
     report = _six_section_report("下周收益18.00%，稳赚。")

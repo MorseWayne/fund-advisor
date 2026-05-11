@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, cast
@@ -13,6 +14,14 @@ from src.llm.report_period import (
     report_period_scope,
     select_report_period,
 )
+
+
+PERCENT_TEXT_RE = re.compile(r"([-+]?\d+(?:\.\d+)?)\s*%")
+RATIO_PERCENT_KEYS = {
+    "trend.standing_line_ratio",
+    "risk.max_drawdown",
+    "valuation.bond_equity_spread",
+}
 
 
 @dataclass(frozen=True)
@@ -91,13 +100,9 @@ class ReportEvidence:
 
         values: list[float] = []
         for metric in self.metrics:
-            number = _number(metric.value)
-            if number is None:
-                continue
-            key = metric.key.lower()
-            unit = (metric.unit or "").lower()
-            if unit == "percent" or any(token in key for token in ("pct", "percent", "ratio", "drawdown", "spread")):
-                values.append(_to_percent(number))
+            values.extend(_metric_percent_values(metric))
+        values.extend(_percent_values_from_object(self.sections))
+        values.extend(_percent_values_from_object(self.risk_flags))
         return values
 
 
@@ -430,3 +435,47 @@ def _number(value: object) -> float | None:
 
 def _to_percent(value: float) -> float:
     return value * 100 if abs(value) <= 1 else value
+
+
+def _metric_percent_values(metric: EvidenceMetric) -> list[float]:
+    number = _number(metric.value)
+    if number is None:
+        return []
+
+    key = metric.key.lower()
+    unit = (metric.unit or "").lower()
+    if unit != "percent" and not any(token in key for token in ("pct", "percent", "ratio", "drawdown", "spread")):
+        return []
+
+    if _is_ratio_percent_metric(key):
+        return [_to_percent(number)]
+    if key.startswith("portfolio."):
+        values = [number]
+        if abs(number) <= 1:
+            values.append(number * 100)
+        return values
+    return [number]
+
+
+def _is_ratio_percent_metric(key: str) -> bool:
+    return (
+        key in RATIO_PERCENT_KEYS
+        or (key.startswith("overview.index.") and key.endswith("_change_pct"))
+        or (key.startswith("portfolio.holdings.") and key.endswith(".change_pct"))
+    )
+
+
+def _percent_values_from_object(value: object) -> list[float]:
+    if isinstance(value, str):
+        return [float(match.group(1)) for match in PERCENT_TEXT_RE.finditer(value)]
+    if isinstance(value, Mapping):
+        values: list[float] = []
+        for item in value.values():
+            values.extend(_percent_values_from_object(item))
+        return values
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        values = []
+        for item in value:
+            values.extend(_percent_values_from_object(item))
+        return values
+    return []

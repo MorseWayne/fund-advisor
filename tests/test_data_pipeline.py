@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 
 from src.data.collectors.providers.base import Quote
+from src.data.portfolio import load_portfolio
 from src.data.pipeline import DataPipeline
 
 
@@ -201,3 +202,25 @@ async def test_collect_global_data_converts_quotes_into_legacy_shape():
     assert macro["usdcny"] == 7.21
     assert macro["us10y"] == 4.25
     assert macro["us5y"] == 4.10
+
+
+def test_load_portfolio_accepts_commodity_category(tmp_path):
+    portfolio_file = tmp_path / "portfolio.yaml"
+    portfolio_file.write_text(
+        """
+holdings:
+  - code: "518880"
+    name: "黄金ETF"
+    market: "a_share"
+    cost_basis: 5.85
+    shares: 1000
+    category: "commodity"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    holdings = load_portfolio(portfolio_file)
+
+    assert len(holdings) == 1
+    assert holdings[0].code == "518880"
+    assert holdings[0].category.value == "commodity"
