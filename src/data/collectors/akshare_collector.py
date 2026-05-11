@@ -802,6 +802,235 @@ class AKShareCollector:
 
         return result
 
+    # ---- New data sources added for improved decision quality ----
+
+    async def fetch_qdii_premium(self) -> dict[str, Any]:
+        """Fetch QDII ETF real-time premium/discount rates.
+
+        QDII ETFs trade in RMB but hold foreign assets. When the fund company
+        suspends subscriptions (额度用尽), the ETF can trade at significant
+        premiums (5-30%). Buying at a premium means overpaying for the
+        underlying assets.
+
+        Returns:
+            ``{"qdii_premiums": [...], "max_premium": float, "high_premium_alerts": [...]}``
+        """
+        ak_module = _require_akshare()
+        result: dict[str, Any] = {"timestamp": int(datetime.now().timestamp())}
+
+        try:
+            # fund_etf_fund_info_em provides IOPV (实时净值) and current price
+            # for all ETFs, allowing premium/discount calculation
+            df = await self._call_akshare(ak_module.fund_etf_fund_info_em)
+            if df is None or df.empty:
+                return {"qdii_premiums": [], "max_premium": 0, "high_premium_alerts": []}
+
+            premiums: list[dict[str, Any]] = []
+            high_alerts: list[dict[str, Any]] = []
+
+            for _, row in df.iterrows():
+                code = str(row.get("基金代码", row.get("code", "")))
+                name = str(row.get("基金简称", row.get("name", "")))
+                iopv = _to_float(row.get("IOPV", row.get("iopv", row.get("实时净值"))))
+                price = _to_float(row.get("最新价", row.get("price")))
+
+                if iopv is None or price is None or iopv <= 0:
+                    continue
+
+                premium_pct = round((price - iopv) / iopv * 100, 2)
+
+                entry = {
+                    "code": code,
+                    "name": name,
+                    "price": price,
+                    "iopv": iopv,
+                    "premium_pct": premium_pct,
+                }
+                premiums.append(entry)
+
+                # Alert on significant premiums (>3% is noteworthy, >5% is dangerous)
+                if premium_pct > 5:
+                    high_alerts.append(entry)
+                elif premium_pct > 3:
+                    high_alerts.append(entry)
+
+            # Sort by premium descending
+            premiums.sort(key=lambda x: abs(x.get("premium_pct", 0)), reverse=True)
+            max_premium = max(
+                (abs(p.get("premium_pct", 0)) for p in premiums), default=0
+            )
+
+            result["qdii_premiums"] = premiums[:30]
+            result["max_premium"] = max_premium
+            result["high_premium_alerts"] = high_alerts[:10]
+
+        except Exception as exc:
+            logger.warning(f"QDII premium fetch failed: {exc}")
+            result["error"] = str(exc)
+
+        return result
+
+    async def fetch_macro_liquidity(self) -> dict[str, float]:
+        """Fetch China macro liquidity indicators: LPR, social financing, M2.
+
+        These indicators capture domestic monetary conditions:
+        - LPR: loan prime rate, the benchmark lending rate
+        - M2 growth: broad money supply growth rate (YoY)
+        - Social financing (社融): total credit extended to the real economy
+
+        Returns a dict with keys like ``lpr_1y``, ``lpr_5y``, ``m2_yoy``,
+        ``social_financing``, or ``None`` on failure.
+        """
+        ak_module = _require_akshare()
+        result: dict[str, float] = {}
+
+        # ---- LPR (Loan Prime Rate) ----
+        try:
+            df = await self._call_akshare(ak_module.macro_china_lpr)
+            if df is not None and not df.empty:
+                latest = df.iloc[-1] if len(df) > 0 else None
+                if latest is not None:
+                    lpr_1y = _to_float(latest.get("1年期LPR", latest.get("LPR1Y")))
+                    lpr_5y = _to_float(latest.get("5年期LPR", latest.get("LPR5Y")))
+                    if lpr_1y is not None:
+                        result["lpr_1y"] = lpr_1y
+                    if lpr_5y is not None:
+                        result["lpr_5y"] = lpr_5y
+        except Exception:
+            logger.debug("LPR fetch failed or API not available")
+
+        # ---- M2 Money Supply ----
+        try:
+            df = await self._call_akshare(ak_module.macro_china_money_supply)
+            if df is not None and not df.empty:
+                latest = df.iloc[-1] if len(df) > 0 else df.iloc[0]
+                m2 = _to_float(latest.get("M2同比", latest.get("M2", latest.get("货币和准货币(M2)"))))
+                if m2 is not None:
+                    result["m2_yoy"] = m2
+        except Exception:
+            logger.debug("M2 fetch failed or API not available")
+
+        # ---- Social Financing (社融增量) ----
+        try:
+            df = await self._call_akshare(ak_module.macro_china_shrzgm)
+            if df is not None and not df.empty:
+                latest = df.iloc[-1] if len(df) > 0 else df.iloc[0]
+                sf = _to_float(latest.get("社会融资规模增量", latest.get("增量")))
+                if sf is not None:
+                    result["social_financing"] = sf
+        except Exception:
+            logger.debug("Social financing fetch failed or API not available")
+
+        if not result:
+            logger.warning("All macro liquidity fetches returned no data")
+            return {}
+
+        return result
+
+    async def fetch_margin_balance(self) -> dict[str, Any]:
+        """Fetch margin trading balance (两融余额) from Shanghai/Shenzhen exchanges.
+
+        Margin balance reflects leveraged sentiment:
+        - Rising margin balance → bullish sentiment, more leverage
+        - Falling margin balance → deleveraging, risk-off
+
+        Returns:
+            ``{"margin_balance": float, "date": str}`` or empty dict on failure.
+        """
+        ak_module = _require_akshare()
+        result: dict[str, Any] = {"timestamp": int(datetime.now().timestamp())}
+
+        try:
+            # Shanghai margin data
+            df = await self._call_akshare(ak_module.stock_margin_detail_sse, date="")
+            if df is not None and not df.empty:
+                # The function returns the most recent data when date is empty
+                latest = df.iloc[-1] if len(df) > 0 else df.iloc[0]
+                balance = _to_float(latest.get("融资余额", latest.get("margin_balance")))
+                date_val = str(
+                    latest.get("信用交易日期", latest.get("date", ""))
+                )
+                if balance is not None:
+                    result["margin_balance"] = balance
+                    result["date"] = date_val
+        except Exception as exc:
+            logger.debug(f"Shanghai margin fetch failed: {exc}")
+
+        # Fallback: use East Money margin summary
+        if "margin_balance" not in result:
+            try:
+                df = await self._call_akshare(ak_module.stock_margin_sse)
+                if df is not None and not df.empty:
+                    latest = df.iloc[-1]
+                    balance = _to_float(latest.get("融资余额", latest.get("margin_value")))
+                    if balance is not None:
+                        result["margin_balance"] = balance
+                        result["date"] = str(latest.get("日期", latest.get("date", "")))
+            except Exception as exc:
+                logger.debug(f"Margin summary fetch failed: {exc}")
+
+        if "margin_balance" not in result:
+            return {}
+
+        return result
+
+    async def fetch_hsgt_flow_trend(self) -> dict[str, Any]:
+        """Fetch recent north-bound (沪深港通) capital flow trend.
+
+        North-bound flow is a key sentiment indicator for A-shares:
+        - Sustained net inflow → foreign capital bullish on A-shares
+        - Sustained net outflow → risk-off or capital repatriation
+
+        Returns:
+            ``{"recent_flows": [...], "net_5d": float, "trend": "inflow"|"outflow"|"mixed"}``
+        """
+        ak_module = _require_akshare()
+        result: dict[str, Any] = {"timestamp": int(datetime.now().timestamp())}
+
+        try:
+            df = await self._call_akshare(ak_module.stock_hsgt_hist_em)
+            if df is None or df.empty:
+                return {"recent_flows": [], "net_5d": 0, "trend": "unknown"}
+
+            recent = df.tail(10)
+            flows: list[dict[str, Any]] = []
+            net_sum = 0.0
+
+            for _, row in recent.iterrows():
+                date_val = str(row.get("日期", row.get("date", "")))
+                net_inflow = _to_float(
+                    row.get("净买入", row.get("净流入", row.get("net_inflow")))
+                )
+                if net_inflow is not None:
+                    flows.append({
+                        "date": date_val,
+                        "net_inflow": round(net_inflow, 2),
+                    })
+                    net_sum += net_inflow
+
+            # Determine trend from last 5 trading days
+            recent_5 = flows[-5:] if len(flows) >= 5 else flows
+            if recent_5:
+                positive_days = sum(1 for f in recent_5 if f.get("net_inflow", 0) > 0)
+                if positive_days >= 4:
+                    trend = "inflow"
+                elif positive_days <= 1:
+                    trend = "outflow"
+                else:
+                    trend = "mixed"
+            else:
+                trend = "unknown"
+
+            result["recent_flows"] = flows
+            result["net_5d"] = round(net_sum, 2)
+            result["trend"] = trend
+
+        except Exception as exc:
+            logger.warning(f"HSGT flow fetch failed: {exc}")
+            result["error"] = str(exc)
+
+        return result
+
     # Compatibility aliases for likely pipeline naming conventions.
     async def get_etf_spot_data(self) -> dict[str, Any]:
         return await self.fetch_etf_spot_data()

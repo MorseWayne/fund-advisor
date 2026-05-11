@@ -9,7 +9,9 @@ from typing import cast
 from loguru import logger
 
 from src.llm.client import LLMClient
-from src.llm.prompts import build_daily_report_prompt
+from src.llm.prompts import build_daily_report_prompt, build_structured_report_prompt
+from src.llm.report_renderer import render_structured_report
+from src.llm.report_schema import StructuredReport
 from src.llm.report_period import (
     ReportPeriod,
     normalize_report_period,
@@ -132,6 +134,72 @@ class ReportGenerator:
             logger.info("Fallback {} generated, chars={}", label, len(bundle.text))
             return bundle
 
+    async def generate_structured_report_bundle(
+        self,
+        analysis_result: dict[str, object],
+        report_period: ReportPeriod | str | None = None,
+    ) -> GeneratedReport:
+        """Generate a structured JSON report with Pydantic validation.
+
+        Prefer this over ``generate_daily_report_bundle()`` — it produces
+        traceable output where every number cites its evidence source.
+        Falls back to text-based generation if JSON parsing fails.
+        """
+
+        period = normalize_report_period(report_period) if report_period is not None else select_report_period((analysis_result or {}).get("date"))
+        label = report_period_label(period)
+        logger.info("Building structured {} prompts", label)
+
+        previous_record = self._load_previous_record(analysis_result, period)
+        previous_context = self._build_previous_context(previous_record)
+        current_evidence = build_report_evidence(analysis_result, report_period=period)
+        change_summary = build_change_summary(current_evidence, previous_record, previous_context)
+
+        system_prompt, user_prompt = build_structured_report_prompt(
+            analysis_result,
+            report_period=period,
+            previous_report_context=previous_context,
+            change_summary=change_summary,
+        )
+
+        try:
+            logger.info("Calling LLM for structured {} generation", label)
+            json_response = await self.llm_client.generate_json(
+                user_prompt,
+                system_prompt=system_prompt,
+                temperature=0.3,  # Lower temperature for structured output
+                max_tokens=min(self.llm_client.max_tokens, REPORT_MAX_TOKENS * 3),
+                json_mode=True,
+            )
+
+            structured = StructuredReport.model_validate(json_response)
+            report_text = render_structured_report(structured)
+
+            bundle = self._finalize_report_bundle(
+                report_text,
+                current_evidence,
+                previous_context,
+                change_summary,
+                source="llm-structured",
+            )
+            logger.info(
+                "Structured {} generated, chars={} sections={} metrics_cited={}",
+                label, len(bundle.text),
+                len(structured.sections),
+                sum(len(s.cited_metrics) for s in structured.sections),
+            )
+            return bundle
+
+        except Exception as exc:
+            logger.exception(
+                "Structured {} generation failed; falling back to text mode",
+                label,
+            )
+            # Fall back to original text-based generation
+            return await self.generate_daily_report_bundle(
+                analysis_result, report_period=period,
+            )
+
     def _finalize_report_bundle(
         self,
         report: str,
@@ -142,7 +210,7 @@ class ReportGenerator:
     ) -> GeneratedReport:
         """Verify, score, audit, and return a structured report bundle."""
 
-        result = self.verifier.verify(report, evidence)
+        result = self.verifier.verify(report, evidence, source=source)
         if result.has_findings:
             logger.warning(
                 "Report verification findings count={} confidence={:.2f} passed={}",

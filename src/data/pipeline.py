@@ -13,7 +13,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.config import AppConfig, load_config
 from src.data.collectors.akshare_collector import AKShareCollector
-from src.data.collectors.yfinance_collector import YFinanceCollector
+from src.data.collectors.cache import ProviderCache
+from src.data.collectors.providers.akshare_global import AKShareGlobalProvider
+from src.data.collectors.providers.base import GlobalMarketProvider, Quote, quote_to_dict
+from src.data.collectors.providers.chained import ChainedProvider
+from src.data.collectors.providers.fred import FREDProvider
+from src.data.collectors.providers.stooq import StooqProvider
+from src.data.collectors.providers.symbol_map import (
+    GLOBAL_INDICES as MONITORED_GLOBAL_INDICES,
+    US_ETFS as MONITORED_US_ETFS,
+)
+from src.data.collectors.providers.yfinance import YFinanceProvider
 from src.data.storage import MarketDB
 from src.data.portfolio import load_portfolio
 from src.data.models import DailyMarketSnapshot, HoldingStatus, PortfolioStatus
@@ -70,7 +80,36 @@ class DataPipeline:
         )
         self.db = MarketDB(self.config.data.storage.path)
         self.akshare = AKShareCollector()
-        self.yfinance = YFinanceCollector()
+        self.global_market = self._build_global_market_provider()
+
+    def _build_global_market_provider(self) -> ChainedProvider:
+        gm = self.config.data.global_market
+        cache = ProviderCache(self.db, ttl_hours=gm.cache_ttl_hours)
+        registry: dict[str, GlobalMarketProvider] = {}
+        if gm.stooq.enabled:
+            registry["stooq"] = StooqProvider(
+                base_url=gm.stooq.base_url,
+                timeout_seconds=gm.stooq.timeout_seconds,
+                max_concurrency=gm.stooq.max_concurrency,
+            )
+        if gm.fred.enabled:
+            registry["fred"] = FREDProvider(
+                api_key_env=gm.fred.api_key_env,
+                base_url=gm.fred.base_url,
+                timeout_seconds=gm.fred.timeout_seconds,
+            )
+        if gm.akshare_global.enabled:
+            registry["akshare_global"] = AKShareGlobalProvider(
+                rate_limit_seconds=gm.akshare_global.rate_limit_seconds,
+            )
+        if gm.yfinance.enabled:
+            registry["yfinance"] = YFinanceProvider(
+                rate_limit_seconds=gm.yfinance.rate_limit_seconds,
+            )
+        ordered = [registry[name] for name in gm.providers if name in registry]
+        if not ordered:
+            logger.warning("No global market providers enabled — global data will be empty")
+        return ChainedProvider(ordered, cache=cache)
 
     async def collect_a_share_data(self) -> dict[str, Any]:
         logger.info("Collecting A-share data via AKShare...")
@@ -83,10 +122,14 @@ class DataPipeline:
             self.akshare.fetch_valuation_data(),
             self.akshare.fetch_news_headlines(),
             self.akshare.fetch_precious_metals_data(),
+            self.akshare.fetch_qdii_premium(),
+            self.akshare.fetch_macro_liquidity(),
+            self.akshare.fetch_margin_balance(),
+            self.akshare.fetch_hsgt_flow_trend(),
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        etf_result, index_result, sector_result, flow_result, val_result, news_result, pm_result = results
+        etf_result, index_result, sector_result, flow_result, val_result, news_result, pm_result, qdii_result, liquidity_result, margin_result, hsgt_result = results
 
         def _safe_dict(result, key, default=None):
             if isinstance(result, Exception):
@@ -111,42 +154,80 @@ class DataPipeline:
             "valuation": valuation if isinstance(valuation, list) else [],
             "news": news if isinstance(news, list) else [],
             "precious_metals": _safe_dict(pm_result, "precious_metals", {}) if isinstance(pm_result, dict) else {},
+            "qdii_premiums": _safe_dict(qdii_result, "qdii_premiums", []) if isinstance(qdii_result, dict) else [],
+            "liquidity": _safe_dict(liquidity_result, "liquidity", {}) if isinstance(liquidity_result, dict) else {},
+            "margin": _safe_dict(margin_result, "margin_balance") if isinstance(margin_result, dict) else {},
+            "hsgt_flows": _safe_dict(hsgt_result, "recent_flows", []) if isinstance(hsgt_result, dict) else [],
         }
 
     async def collect_global_data(self) -> dict[str, Any]:
-        logger.info("Collecting global market data via yfinance...")
+        logger.info("Collecting global market data via chained providers...")
         try:
-            result = await self.yfinance.fetch_all()
+            grouped = await self.global_market.fetch_all(trade_date=date.today().isoformat())
         except Exception as exc:
             logger.error(f"Global data fetch failed: {exc}")
-            result = {"us_etfs": [], "global_indices": [], "vix": {}, "forex": [], "treasury_yields": []}
+            grouped = {
+                "us_etf": [],
+                "global_index": [],
+                "volatility_index": [],
+                "forex": [],
+                "treasury_yield": [],
+            }
 
-        vix_data = result.get("vix", {})
-        forex_list = result.get("forex", [])
-        yields_list = result.get("treasury_yields", [])
+        us_etfs = [quote_to_dict(q) for q in grouped.get("us_etf", [])]
+        global_indices = [quote_to_dict(q) for q in grouped.get("global_index", [])]
+        vix_quotes = grouped.get("volatility_index", [])
+        vix_data = quote_to_dict(vix_quotes[0]) if vix_quotes else {}
+        forex_list = [quote_to_dict(q) for q in grouped.get("forex", [])]
+        yields_list = [
+            {**quote_to_dict(q), "yield_pct": q.yield_pct if q.yield_pct is not None else q.price}
+            for q in grouped.get("treasury_yield", [])
+        ]
+
+        if not global_indices and not us_etfs and not vix_data:
+            logger.warning(
+                "All global market providers failed or disabled — downstream global data is empty"
+            )
+
+        sources_used = {
+            q.source
+            for bucket in grouped.values()
+            for q in bucket
+            if q.source
+        }
+        if sources_used:
+            logger.info(f"Global data providers used: {sorted(sources_used)}")
 
         macro: dict[str, float] = {}
-        if isinstance(vix_data, dict):
-            macro["vix"] = float(vix_data.get("price", 0))
-        for fx in (forex_list if isinstance(forex_list, list) else []):
+        if isinstance(vix_data, dict) and vix_data.get("price") is not None:
+            macro["vix"] = float(vix_data["price"])
+        for fx in forex_list:
             if isinstance(fx, dict):
-                price = float(fx.get("price", 0))
+                price = fx.get("price")
+                if price is None:
+                    continue
+                price = float(price)
                 symbol = str(fx.get("symbol", "forex"))
                 macro[symbol] = price
                 if symbol == "USDCNY=X" or str(fx.get("name", "")).upper() == "USD/CNY":
                     macro["usdcny"] = price
-        for y in (yields_list if isinstance(yields_list, list) else []):
-            if isinstance(y, dict):
-                yield_value = float(y.get("yield_pct", y.get("price", 0)))
-                symbol = str(y.get("symbol", ""))
-                name = y.get("name", "").replace(" ", "_").lower()
+        for y in yields_list:
+            if not isinstance(y, dict):
+                continue
+            yield_value = y.get("yield_pct", y.get("price"))
+            if yield_value is None:
+                continue
+            yield_value = float(yield_value)
+            symbol = str(y.get("symbol", ""))
+            name = str(y.get("name", "")).replace(" ", "_").lower()
+            if name:
                 macro[name] = yield_value
-                if symbol == "^TNX":
-                    macro["us10y"] = yield_value
-                elif symbol == "^FVX":
-                    macro["us5y"] = yield_value
-                elif symbol == "^IRX":
-                    macro["us3m"] = yield_value
+            if symbol == "^TNX":
+                macro["us10y"] = yield_value
+            elif symbol == "^FVX":
+                macro["us5y"] = yield_value
+            elif symbol == "^IRX":
+                macro["us3m"] = yield_value
 
         for fetcher in (
             self.akshare.fetch_cn_10y_yield,
@@ -159,8 +240,8 @@ class DataPipeline:
                 macro.update(macro_data)
 
         return {
-            "us_etfs": result.get("us_etfs", []),
-            "global_indices": result.get("global_indices", []),
+            "us_etfs": us_etfs,
+            "global_indices": global_indices,
             "macro": macro,
         }
 
@@ -271,6 +352,10 @@ class DataPipeline:
             sectors=sector_models, fund_flows=fund_flow_model,
             macro=macro, news_headlines=headlines[:10], valuation=valuation_summary,
             precious_metals=a_share_data.get("precious_metals", {}),
+            qdii_premiums=a_share_data.get("qdii_premiums", []),
+            liquidity=a_share_data.get("liquidity", {}),
+            margin=a_share_data.get("margin", {}),
+            hsgt_flows=a_share_data.get("hsgt_flows", []),
         )
 
         validation = validate_snapshot(snapshot)
@@ -340,18 +425,15 @@ class BackfillPipeline:
     def __init__(
         self,
         akshare: AKShareCollector,
-        yfinance: YFinanceCollector,
         db: MarketDB,
         config: AppConfig,
     ) -> None:
         self.akshare = akshare
-        self.yfinance = yfinance
         self.db = db
         self.config = config
         akshare_source = self.config.data.sources.get("akshare")
-        yfinance_source = self.config.data.sources.get("yfinance")
         self.akshare_sleep = akshare_source.rate_limit_seconds if akshare_source else 1.0
-        self.yfinance_sleep = yfinance_source.rate_limit_seconds if yfinance_source else 0.5
+        self.yfinance_sleep = self.config.data.global_market.yfinance.rate_limit_seconds
 
     def run_backfill(self, days: int = 365) -> dict[str, int]:
         """Backfill configured holdings and monitored markets for the last ``days`` days."""
@@ -406,9 +488,9 @@ class BackfillPipeline:
             else:
                 universe["global_etfs"][holding.code] = holding.name
 
-        for symbol, name in self.yfinance.US_ETFS.items():
+        for symbol, name in MONITORED_US_ETFS.items():
             universe["global_etfs"].setdefault(symbol, name)
-        for symbol, name in self.yfinance.GLOBAL_INDICES.items():
+        for symbol, name in MONITORED_GLOBAL_INDICES.items():
             universe["global_indices"].setdefault(symbol, name)
 
         for item in self._load_config_monitor_items():
@@ -595,13 +677,124 @@ class BackfillPipeline:
 
 async def main():
     pipeline = DataPipeline()
-    snapshot = await pipeline.run_daily_collection()
-    portfolio = pipeline.calc_holding_status(snapshot)
-    print(f"\n✓ Collection complete: {snapshot.date}")
-    print(f"  Indices: {len(snapshot.indices)}")
-    print(f"  ETFs: {len(snapshot.etfs)}")
-    print(f"  Sectors: {len(snapshot.sectors)}")
-    print(f"  Portfolio: {len(portfolio.holdings)} holdings, total ¥{portfolio.total_value:,.0f}")
+
+
+def generate_monthly_pnl_summary(db_path: str = "data/fund_advisor.db") -> str:
+    """Generate a month-end portfolio P&L summary.
+
+    Compares the most recent snapshot to the snapshot from the end of the
+    previous month. Returns a formatted markdown string suitable for
+    push notification or display.
+
+    Returns empty string if insufficient data.
+    """
+
+    import sqlite3
+    import json
+    from datetime import date, timedelta
+    from pathlib import Path
+
+    db_file = Path(db_path)
+    if not db_file.exists():
+        return ""
+
+    today = date.today()
+    # First day of current month
+    first_of_month = today.replace(day=1)
+    # Last day of previous month
+    last_of_prev = first_of_month - timedelta(days=1)
+    prev_month_start = last_of_prev.replace(day=1)
+
+    try:
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+
+        # Get latest snapshot date
+        row = conn.execute(
+            "SELECT MAX(date) as max_date FROM index_daily"
+        ).fetchone()
+        if not row or not row["max_date"]:
+            conn.close()
+            return ""
+        latest_date = row["max_date"]
+
+        # Get previous month-end snapshot (closest to last day of previous month)
+        row = conn.execute(
+            "SELECT MAX(date) as prev_date FROM index_daily WHERE date <= ?",
+            (last_of_prev.isoformat(),),
+        ).fetchone()
+        prev_date = row["prev_date"] if row else None
+
+        # Get portfolio value from macro_daily.extra (saved during snapshot)
+        # Fallback: use etf_daily for holdings
+        # For MVP, read the audit log for latest report's portfolio data
+        audit_path = Path("data/reports/report-audit.jsonl")
+        current_value = None
+        prev_value = None
+
+        if audit_path.exists():
+            lines = audit_path.read_text(encoding="utf-8").splitlines()
+            for line in reversed(lines):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                evidence = record.get("evidence_payload", {})
+                sections = evidence.get("sections", {})
+                portfolio = sections.get("portfolio_status", {})
+                if portfolio.get("total_value"):
+                    current_value = float(portfolio["total_value"])
+                    current_pnl = float(portfolio.get("total_profit_loss", 0))
+                    current_change = float(portfolio.get("total_change_pct", 0))
+                    break
+
+            # Find previous month-end report
+            for line in reversed(lines):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                as_of = record.get("as_of_date", "")
+                if as_of < prev_month_start.isoformat() or as_of > last_of_prev.isoformat():
+                    continue
+                evidence = record.get("evidence_payload", {})
+                sections = evidence.get("sections", {})
+                portfolio = sections.get("portfolio_status", {})
+                if portfolio.get("total_value"):
+                    prev_value = float(portfolio["total_value"])
+                    break
+
+        conn.close()
+
+        if current_value is None:
+            return ""
+
+        lines_output = [
+            f"📊 {latest_date} 月度持仓盈亏汇总",
+            "",
+            f"当前组合价值：¥{current_value:,.0f}",
+        ]
+
+        if prev_value and prev_value > 0:
+            monthly_change = (current_value - prev_value) / prev_value * 100
+            monthly_pnl = current_value - prev_value
+            emoji = "📈" if monthly_change >= 0 else "📉"
+            lines_output.append(
+                f"本月变动：{emoji} ¥{monthly_pnl:+,.0f} ({monthly_change:+.2f}%)"
+            )
+            lines_output.append(f"上月结算：¥{prev_value:,.0f}")
+
+        lines_output.append("")
+        lines_output.append("详细报告请查看 Streamlit 看板或最新投资报告。")
+
+        return "\n".join(lines_output)
+
+    except Exception:
+        return ""
 
 
 if __name__ == "__main__":

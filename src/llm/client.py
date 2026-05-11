@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
 from collections.abc import Mapping
 from typing import cast
 
@@ -175,18 +177,22 @@ class LLMClient:
         system_prompt: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        json_mode: bool = False,
     ) -> dict[str, object]:
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        return {
+        payload: dict[str, object] = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        return payload
 
     async def _retry_or_raise(
         self,
@@ -242,3 +248,144 @@ class LLMClient:
         if not isinstance(content, str) or not content.strip():
             raise ValueError("LLM response content is empty")
         return content.strip()
+
+    async def generate_json(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        json_mode: bool = True,
+    ) -> dict[str, object]:
+        """Generate structured JSON output using chat completions.
+
+        When *json_mode* is True (default), adds ``response_format`` to
+        request JSON mode from providers that support it. The response is
+        parsed as JSON, with fallback extraction from markdown code fences
+        if the raw content is not valid JSON.
+
+        Returns:
+            Parsed JSON response as a dictionary.
+        """
+
+        if not self.api_key:
+            message = (
+                f"Missing API key for provider '{self.provider}': "
+                "set LLM_API_KEY or pass api_key."
+            )
+            logger.error(message)
+            raise LLMClientError(message)
+
+        endpoint = f"{self.base_url}/chat/completions"
+        payload = self._build_payload(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+        )
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        max_attempts = 3
+        last_error: Exception | None = None
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    logger.info(
+                        "Calling LLM (JSON) provider={} model={} attempt={}/{}",
+                        self.provider, self.model, attempt, max_attempts,
+                    )
+                    response = await client.post(endpoint, headers=headers, json=payload)
+                    if response.status_code in self.RETRY_STATUS_CODES:
+                        await self._retry_or_raise(response, attempt, max_attempts)
+                        continue
+
+                    _ = response.raise_for_status()
+                    response_json = cast(dict[str, object], response.json())
+                    content = self._extract_content(response_json)
+                    parsed = _extract_json(content)
+                    logger.info("LLM JSON generation completed, keys={}", len(parsed))
+                    return parsed
+                except httpx.TimeoutException as exc:
+                    last_error = exc
+                    await self._retry_request_error(exc, attempt, max_attempts)
+                except httpx.HTTPStatusError as exc:
+                    last_error = exc
+                    logger.exception(
+                        "LLM HTTP error provider={} status_code={} attempt={}/{}",
+                        self.provider, exc.response.status_code, attempt, max_attempts,
+                    )
+                    raise LLMClientError(f"LLM request failed: {exc.response.text}") from exc
+                except httpx.RequestError as exc:
+                    last_error = exc
+                    await self._retry_request_error(exc, attempt, max_attempts)
+                except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+                    last_error = exc
+                    logger.exception(
+                        "LLM JSON parse error provider={} attempt={}/{}",
+                        self.provider, attempt, max_attempts,
+                    )
+                    if attempt >= max_attempts:
+                        raise LLMClientError(
+                            f"Failed to parse JSON response after {max_attempts} attempts: {exc}"
+                        ) from exc
+                    await asyncio.sleep(2.0 ** (attempt - 1))
+
+        message = f"LLM JSON request failed after {max_attempts} attempts"
+        logger.error(message)
+        raise LLMClientError(message) from last_error
+
+
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
+
+
+def _extract_json(content: str) -> dict[str, object]:
+    """Parse JSON from LLM response, with markdown fence fallback.
+
+    Attempts in order:
+    1. Direct JSON parse of the full content
+    2. Extract and parse content inside ```json ... ``` fences
+    3. Extract and parse content inside ``` ... ``` fences (any language)
+
+    Raises ``json.JSONDecodeError`` if all attempts fail.
+    """
+
+    content = content.strip()
+
+    # Attempt 1: direct parse
+    try:
+        result = json.loads(content)
+        if isinstance(result, dict):
+            return cast(dict[str, object], result)
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 2: extract from ```json fences
+    matches = _JSON_FENCE_RE.findall(content)
+    for match in matches:
+        try:
+            result = json.loads(match.strip())
+            if isinstance(result, dict):
+                return cast(dict[str, object], result)
+        except json.JSONDecodeError:
+            continue
+
+    # Last resort: try to find the first { ... } block
+    brace_start = content.find("{")
+    brace_end = content.rfind("}")
+    if brace_start >= 0 and brace_end > brace_start:
+        try:
+            result = json.loads(content[brace_start:brace_end + 1])
+            if isinstance(result, dict):
+                return cast(dict[str, object], result)
+        except json.JSONDecodeError:
+            pass
+
+    raise json.JSONDecodeError(
+        f"Failed to extract valid JSON from response: {content[:200]}...",
+        content, 0,
+    )

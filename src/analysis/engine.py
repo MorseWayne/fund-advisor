@@ -27,8 +27,10 @@ from src.analysis.rotation import (
 )
 from src.analysis.trend import (
     calc_ma_alignment,
+    calc_multi_timeframe_signal,
     calc_sentiment,
     calc_standing_line_ratio,
+    calc_volume_confirmation,
 )
 from src.analysis.valuation import (
     assess_overall_valuation,
@@ -173,6 +175,19 @@ class AnalysisEngine:
         position_advice = _position_advice(ma_alignment, standing_line_ratio, standing_threshold)
         confidence = _trend_confidence(ma_alignment, standing_line_ratio, sentiment)
 
+        # Volume-price confirmation
+        volume_confirmation = None
+        if price_series is not None and len(price_series) >= 20:
+            vol_series = _volume_series_from_snapshot(snapshot, indices, db=self.db)
+            volume_confirmation = calc_volume_confirmation(
+                price_series, vol_series,
+            )
+
+        # Multi-timeframe signal
+        multi_timeframe = None
+        if price_series is not None and len(price_series) >= 125:
+            multi_timeframe = calc_multi_timeframe_signal(price_series)
+
         return {
             "ma_alignment": ma_alignment,
             "standing_line_ratio": standing_line_ratio,
@@ -181,6 +196,8 @@ class AnalysisEngine:
             "sentiment_score": sentiment.get("score") if sentiment else None,
             "position_advice": position_advice,
             "confidence": confidence,
+            "volume_confirmation": volume_confirmation,
+            "multi_timeframe": multi_timeframe,
         }
 
     def _analyze_rotation(
@@ -248,16 +265,39 @@ class AnalysisEngine:
         correlation_threshold = float(_config_get(self.config, "risk", "correlation_warning", default=0.8))
 
         alerts: list[dict[str, Any]] = []
-        for asset in [*indices, *etfs]:
+
+        # Only check major indices and held ETFs for anomaly volatility,
+        # not the entire 1400+ ETF universe (which produces excessive noise).
+        # Read portfolio codes directly since portfolio_status is added after analysis
+        holdings_codes = _load_portfolio_codes()
+
+        major_index_codes = {
+            "sh000001", "sh000300", "sh000016", "sh000688",
+            "sz399001", "sz399006", "^GSPC", "^IXIC", "^HSI", "^N225",
+        }
+
+        assets_to_check: list[dict[str, Any]] = []
+        for idx in indices:
+            code = str(idx.get("code") or idx.get("symbol") or "")
+            if code in major_index_codes:
+                assets_to_check.append(idx)
+        for etf in etfs:
+            code = str(etf.get("code") or "")
+            if code in holdings_codes:
+                assets_to_check.append(etf)
+
+        for asset in assets_to_check:
             change_pct = _first_number(asset, ("change_pct",))
             if change_pct is None or not detect_anomaly_volatility(change_pct, anomaly_threshold):
                 continue
             code = str(asset.get("code") or asset.get("symbol") or asset.get("name") or "未知资产")
             name = str(asset.get("name") or code)
+            # change_pct is a ratio (e.g. 0.031 for 3.1%), format as percentage
+            pct_display = change_pct * 100
             alerts.append({
                 "level": "warning",
                 "alert_type": "异常波动",
-                "message": f"{name} 单日涨跌幅 {change_pct:.2f}% 超过阈值",
+                "message": f"{name} 单日涨跌幅 {pct_display:+.2f}% 超过阈值({anomaly_threshold*100:.0f}%)",
                 "affected_assets": [code],
             })
 
@@ -550,6 +590,37 @@ def _returns_from_price_history(candidate: Any) -> list[float]:
     return [float(item) for item in returns.tolist() if np.isfinite(item)]
 
 
+def _volume_series_from_snapshot(
+    snapshot: Mapping[str, Any],
+    indices: list[dict[str, Any]],
+    db: Any | None = None,
+) -> list[float] | None:
+    """Extract volume history from snapshot, indices, or DB.
+    
+    Returns a list of volume values in chronological order, or None.
+    """
+    # Try volume data from primary index
+    primary_index = _primary_index(indices)
+    if primary_index:
+        for key in ("volume_history", "volumes"):
+            series = _series_from_history(primary_index.get(key), value_keys=("volume", "vol"))
+            if series is not None and not series.empty:
+                return series.tolist()
+
+    # Try DB
+    if db is not None and primary_index:
+        code = str(primary_index.get("code") or primary_index.get("symbol") or "")
+        get_history = getattr(db, "get_historical_index", None)
+        if code and callable(get_history):
+            series = _series_from_history(
+                get_history(code, days=252), value_keys=("volume", "vol")
+            )
+            if series is not None and not series.empty:
+                return series.tolist()
+
+    return None
+
+
 def _series_from_history(candidate: Any, *, value_keys: Sequence[str]) -> pd.Series | None:
     if candidate is None:
         return None
@@ -716,3 +787,21 @@ def _trend_confidence(
     if sentiment is not None:
         score += 0.3
     return round(score, 2)
+
+
+def _load_portfolio_codes() -> set[str]:
+    """Read portfolio.yaml and return the set of held ETF codes."""
+    from pathlib import Path
+    import yaml
+
+    path = Path("portfolio.yaml")
+    if not path.exists():
+        return set()
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        holdings = raw.get("holdings", []) if raw else []
+        return {str(h["code"]) for h in holdings if isinstance(h, dict) and "code" in h}
+    except Exception:
+        return set()

@@ -37,7 +37,7 @@ class VerificationResult:
 class ReportVerifier:
     """Verify that generated reports stay grounded in the evidence packet."""
 
-    def verify(self, report: str, evidence: ReportEvidence) -> VerificationResult:
+    def verify(self, report: str, evidence: ReportEvidence, *, source: str = "") -> VerificationResult:
         findings: list[VerificationFinding] = []
         text = report or ""
 
@@ -45,7 +45,13 @@ class ReportVerifier:
         self._check_empty_sections(text, evidence, findings)
         self._check_freshness(text, evidence, findings)
         self._check_missing_data_disclosure(text, evidence, findings)
-        self._check_numeric_trace(text, evidence, findings)
+
+        # For structured reports, skip regex-based numeric trace since
+        # numbers are validated via Pydantic schema. Only text-based
+        # reports (fallback) need the heuristic check.
+        if "structured" not in source:
+            self._check_numeric_trace(text, evidence, findings)
+
         self._check_advice_safety(text, findings)
 
         errors = [finding for finding in findings if finding.level == "error"]

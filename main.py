@@ -68,7 +68,8 @@ async def run_once():
     llm_client = LLMClient.from_config(config.llm)
     report_gen = ReportGenerator(llm_client)
     report_label = report_period_label(report_period)
-    report_text = await report_gen.generate_daily_report(analysis, report_period=report_period)
+    bundle = await report_gen.generate_structured_report_bundle(analysis, report_period=report_period)
+    report_text = bundle.text
 
     print(f"\n{'='*60}")
     print(f"  Fund-Advisor {report_period_english_label(report_period)}: {snapshot.date}")
@@ -123,7 +124,8 @@ async def run_scheduled():
             llm_client = LLMClient.from_config(config.llm)
             report_gen = ReportGenerator(llm_client)
             report_label = report_period_label(report_period)
-            report_text = await report_gen.generate_daily_report(analysis, report_period=report_period)
+            bundle = await report_gen.generate_structured_report_bundle(analysis, report_period=report_period)
+            report_text = bundle.text
             if nm.channels:
                 await nm.broadcast(report_text, title=f"投资{report_label} {snapshot.date}")
             logger.info("{} generated and pushed", report_label)

@@ -17,7 +17,28 @@ data:
       cache_ttl_minutes: 10       # 全市场行情缓存时间
 
     yfinance:
+      enabled: false
+      rate_limit_seconds: 0.5
+
+  # 全球市场数据：多源回退（Stooq → FRED → AKShare 海外 → yfinance 兜底）
+  global_market:
+    providers: [stooq, fred, akshare_global, yfinance]
+    cache_ttl_hours: 6.0          # 当日缓存有效期（历史日期永不过期）
+    stooq:
       enabled: true
+      base_url: https://stooq.com
+      timeout_seconds: 10.0
+      max_concurrency: 4
+    fred:
+      enabled: true
+      api_key_env: FRED_API_KEY   # 在 .env 中设置 FRED_API_KEY
+      base_url: https://api.stlouisfed.org
+      timeout_seconds: 10.0
+    akshare_global:
+      enabled: true
+      rate_limit_seconds: 1.0
+    yfinance:
+      enabled: false              # 仅作末位兜底，默认关闭
       rate_limit_seconds: 0.5
 
   # 存储配置

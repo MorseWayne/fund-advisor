@@ -261,6 +261,64 @@ class FeishuChannel:
         text = f"{title}\n\n{content}" if title else content
         return {"msg_type": "text", "content": {"text": text}}
 
+    @staticmethod
+    def build_summary_card(
+        date: str,
+        direction: str,
+        direction_reason: str,
+        risk_level: str,
+        change_brief: str,
+        action_count: int,
+    ) -> JsonPayload:
+        """Build a Feishu interactive summary card (compact, 3-line preview).
+
+        This is used for "layered push" where the user gets a quick scan-card
+        first and can open the full report separately.
+        """
+
+        direction_emoji = {"进攻": "🟢", "防守": "🔴", "观望": "🟡"}.get(direction, "⚪")
+        risk_color = {"低": "green", "中": "orange", "高": "red"}.get(risk_level, "grey")
+
+        header = f"{direction_emoji} {direction} | 风险{risk_level}"
+        if change_brief:
+            header += f" | {change_brief[:40]}"
+
+        body_lines = [
+            f"**{date} 投资报告**",
+            f"方向：{direction_emoji} {direction} — {direction_reason}",
+        ]
+        if change_brief:
+            body_lines.append(f"本期变化：{change_brief[:80]}")
+        body_lines.append(f"风险等级：{risk_level} | 操作建议{action_count}条")
+
+        return {
+            "msg_type": "interactive",
+            "card": {
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": header,
+                    },
+                    "template": risk_color,
+                },
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": "\n".join(body_lines),
+                    },
+                    {
+                        "tag": "note",
+                        "elements": [
+                            {
+                                "tag": "plain_text",
+                                "content": "完整报告请在 Streamlit 看板查看或等待推送",
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+
     async def _post(self, client: httpx.AsyncClient, payload: JsonPayload) -> bool:
         try:
             response = await client.post(self.webhook_url, json=payload)
@@ -320,6 +378,67 @@ class NotificationManager:
                 results[name] = await task
             except Exception as exc:
                 logger.warning(f"Notification channel {name} failed: {exc}")
+                results[name] = False
+
+        return results
+
+    async def broadcast_layered(
+        self,
+        full_content: str,
+        title: str = "",
+        *,
+        date: str = "",
+        direction: str = "观望",
+        direction_reason: str = "",
+        risk_level: str = "中",
+        change_brief: str = "",
+        action_count: int = 0,
+    ) -> dict[str, bool]:
+        """Send a compact summary first, then the full report.
+
+        The summary card goes out immediately for quick scanning. The full
+        report follows as the second message. This is the "layered push"
+        pattern: scan in 3 seconds, read in 30.
+        """
+
+        results: dict[str, bool] = {}
+
+        for name, channel in self.channels.items():
+            if not getattr(channel, "enabled", True):
+                continue
+
+            try:
+                # Phase 1: send compact summary card
+                if isinstance(channel, FeishuChannel):
+                    summary_payload = FeishuChannel.build_summary_card(
+                        date=date,
+                        direction=direction,
+                        direction_reason=direction_reason,
+                        risk_level=risk_level,
+                        change_brief=change_brief,
+                        action_count=action_count,
+                    )
+                    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS) as client:
+                        await channel._post(client, summary_payload)
+                else:
+                    # WeChat: send as short markdown
+                    direction_emoji = {"进攻": "🟢", "防守": "🔴", "观望": "🟡"}.get(direction, "⚪")
+                    summary_text = (
+                        f"{direction_emoji} **{date} 投资报告**\n"
+                        f"方向：{direction} — {direction_reason}\n"
+                    )
+                    if change_brief:
+                        summary_text += f"本期变化：{change_brief[:60]}\n"
+                    summary_text += f"风险等级：{risk_level}"
+                    await channel.send(summary_text)
+
+                # Phase 2: send full report
+                await asyncio.sleep(0.5)
+                result = await self._send_to_channel(channel, full_content, title)
+                results[name] = result
+
+            except Exception as exc:
+                logger.warning(f"Layered broadcast failed for {name}: {exc}")
                 results[name] = False
 
         return results

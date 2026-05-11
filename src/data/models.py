@@ -137,6 +137,10 @@ class DailyMarketSnapshot:
     news_headlines: list[str] = field(default_factory=list)
     valuation: dict[str, float] = field(default_factory=dict)
     precious_metals: dict[str, Any] = field(default_factory=dict)
+    qdii_premiums: list[dict[str, Any]] = field(default_factory=list)
+    liquidity: dict[str, float] = field(default_factory=dict)
+    margin: dict[str, Any] = field(default_factory=dict)
+    hsgt_flows: list[dict[str, Any]] = field(default_factory=list)
     validation_errors: list[str] = field(default_factory=list)
     validation_warnings: list[str] = field(default_factory=list)
 
