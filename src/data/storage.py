@@ -124,6 +124,17 @@ class MarketDB:
                 CREATE INDEX IF NOT EXISTS idx_index_daily_date ON index_daily(date);
                 CREATE INDEX IF NOT EXISTS idx_sector_daily_date ON sector_daily(date);
                 CREATE INDEX IF NOT EXISTS idx_fund_flow_date ON fund_flow_daily(date);
+
+                CREATE TABLE IF NOT EXISTS provider_cache (
+                    provider TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    fetched_at TEXT NOT NULL,
+                    UNIQUE(provider, symbol, trade_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_provider_cache_lookup
+                    ON provider_cache(symbol, trade_date);
             """)
         self.create_history_tables()
         logger.info(f"Database initialized at {self.db_path}")

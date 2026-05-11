@@ -14,6 +14,39 @@ class DataSourceConfig(BaseModel):
     cache_ttl_minutes: int = 10
 
 
+class StooqProviderConfig(BaseModel):
+    enabled: bool = True
+    base_url: str = "https://stooq.com"
+    timeout_seconds: float = 10.0
+    max_concurrency: int = 4
+
+
+class FREDProviderConfig(BaseModel):
+    enabled: bool = True
+    api_key_env: str = "FRED_API_KEY"
+    base_url: str = "https://api.stlouisfed.org"
+    timeout_seconds: float = 10.0
+
+
+class AKShareGlobalProviderConfig(BaseModel):
+    enabled: bool = True
+    rate_limit_seconds: float = 1.0
+
+
+class YFinanceProviderConfig(BaseModel):
+    enabled: bool = False
+    rate_limit_seconds: float = 0.5
+
+
+class GlobalMarketConfig(BaseModel):
+    providers: list[str] = ["stooq", "fred", "akshare_global", "yfinance"]
+    cache_ttl_hours: float = 6.0
+    stooq: StooqProviderConfig = StooqProviderConfig()
+    fred: FREDProviderConfig = FREDProviderConfig()
+    akshare_global: AKShareGlobalProviderConfig = AKShareGlobalProviderConfig()
+    yfinance: YFinanceProviderConfig = YFinanceProviderConfig()
+
+
 class StorageConfig(BaseModel):
     type: str = "sqlite"
     path: str = "data/fund_advisor.db"
@@ -97,6 +130,7 @@ class DataConfig(BaseModel):
     us_market_fetch_time: str = "08:00"
     sources: dict[str, DataSourceConfig] = {}
     storage: StorageConfig = StorageConfig()
+    global_market: GlobalMarketConfig = GlobalMarketConfig()
 
 
 class AppConfig(BaseModel):
