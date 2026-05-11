@@ -92,7 +92,7 @@ class AnalysisEngine:
         risk_alerts, risk_metrics = self._analyze_risk(snapshot, indices, etfs)
         gold_result = self._analyze_precious_metals(precious_metals)
 
-        overview = self._build_overview(indices, sectors, fund_flows, news, trend_result, valuation_result, risk_alerts)
+        overview = self._build_overview(indices, sectors, fund_flows, macro, news, trend_result, valuation_result, risk_alerts)
         sector_opportunities = self._build_sector_opportunities(rotation_result.get("momentum_ranking"))
 
         return {
@@ -336,6 +336,7 @@ class AnalysisEngine:
         indices: list[dict[str, Any]],
         sectors: list[dict[str, Any]],
         fund_flows: Mapping[str, Any],
+        macro: Mapping[str, Any],
         news: list[str],
         trend_result: Mapping[str, Any],
         valuation_result: Mapping[str, Any],
@@ -354,7 +355,7 @@ class AnalysisEngine:
         else:
             direction = "观望"
 
-        parts = []
+        parts: list[str] = []
         if ma_alignment:
             parts.append(f"趋势{ma_alignment}")
         if valuation_level:
@@ -367,6 +368,7 @@ class AnalysisEngine:
         market_breadth = _build_market_breadth(sectors)
         fund_flow_direction = _build_fund_flow_direction(fund_flows)
         key_events = news[:3] if news else []
+        global_context = _build_global_context(indices, macro)
 
         return {
             "summary": summary,
@@ -375,6 +377,7 @@ class AnalysisEngine:
             "index_snapshot": index_snapshot,
             "market_breadth": market_breadth,
             "fund_flow_direction": fund_flow_direction,
+            "global_context": global_context,
         }
 
     @staticmethod
@@ -680,7 +683,19 @@ def _advance_decline_ratio(macro: Mapping[str, Any], etfs: list[dict[str, Any]])
     return advances / max(declines, 1)
 
 
-_KEY_INDEX_CODES = {"sh000300", "000300", "399006", "sh000001", "399001"}
+_KEY_INDEX_CODES = {
+    # A股核心指数
+    "sh000300", "000300",  # 沪深300
+    "sh000001",            # 上证指数
+    "sz399001", "399001",  # 深证成指
+    "sz399006", "399006",  # 创业板指
+    # 全球主要指数
+    "^GSPC",               # 标普500
+    "^IXIC",               # 纳斯达克
+    "^HSI",                # 恒生指数
+    "^N225",               # 日经225
+    "^STOXX50E",           # 欧洲斯托克50
+}
 
 
 def _news_headlines(snapshot: Mapping[str, Any]) -> list[str]:
@@ -748,6 +763,35 @@ def _build_fund_flow_direction(fund_flows: Mapping[str, Any]) -> str | None:
     if nb < 0:
         return "north_outflow"
     return "north_flat"
+
+
+_GLOBAL_INDEX_CODES = {"^GSPC", "^IXIC", "^HSI", "^N225", "^STOXX50E"}
+
+
+def _build_global_context(
+    indices: list[dict[str, Any]],
+    macro: Mapping[str, Any],
+) -> dict[str, Any]:
+    vix_value = _as_number(macro.get("vix"))
+    usdcny_value = _as_number(macro.get("usdcny"))
+    us10y_value = _as_number(macro.get("us10y"))
+
+    global_snapshot: dict[str, dict[str, Any]] = {}
+    for idx in indices:
+        code = str(idx.get("code") or "")
+        if code in _GLOBAL_INDEX_CODES:
+            global_snapshot[code] = _compact_index(idx)
+
+    context: dict[str, Any] = {"global_indices": global_snapshot}
+    if vix_value is not None:
+        vix_level = "恐慌" if vix_value > 25 else ("警惕" if vix_value > 20 else "平稳")
+        context["vix"] = {"value": round(vix_value, 2), "level": vix_level}
+    if usdcny_value is not None:
+        context["usdcny"] = round(usdcny_value, 4)
+    if us10y_value is not None:
+        context["us10y"] = round(us10y_value, 2)
+
+    return context
 
 
 def _returns_from_snapshot(snapshot: Mapping[str, Any], etfs: list[dict[str, Any]]) -> dict[str, list[float]]:

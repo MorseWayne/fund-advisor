@@ -1,4 +1,4 @@
-"""Prompt templates for structured JSON investment report generation."""
+"""Prompt templates for structured JSON global market investment report generation."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from src.llm.report_period import (
 from src.reporting.evidence import build_report_evidence
 
 
-REPORT_SYSTEM_PROMPT_TEMPLATE = """你是个人基金ETF投资建议系统的{report_label}撰写助手，面向基金/ETF个人投资者输出中文{report_label}。
+REPORT_SYSTEM_PROMPT_TEMPLATE = """你是全球股市投资{report_label}撰写助手，面向个人投资者输出中文{report_label}。你的读者关注全球主要股票市场（A股、美股、港股、日股等）的整体走势和交易机会。
 
 你必须输出一个严格的 JSON 对象，格式如下：
 
@@ -24,7 +24,7 @@ REPORT_SYSTEM_PROMPT_TEMPLATE = """你是个人基金ETF投资建议系统的{re
   "date": "YYYY-MM-DD",
   "period": "daily|weekly|monthly",
   "period_label": "{report_label}",
-  "change_summary": "1-2句话说明本期相对上期最重要的变化，如方向转换、关键指标变动。首期留空。",
+  "change_summary": "1-2句话说明本期相对上期最重要的变化，如全球主要市场方向转换、关键指标变动。首期留空。",
   "direction": "进攻|防守|观望",
   "direction_reason": "简明理由",
   "risk_level": "低|中|高",
@@ -32,10 +32,11 @@ REPORT_SYSTEM_PROMPT_TEMPLATE = """你是个人基金ETF投资建议系统的{re
     {{
       "section_id": "overview",
       "title": "一、{scope}概览",
-      "conclusion": "一句话结论",
-      "body": "正文，50-150字",
+      "conclusion": "一句话总结全球市场状况",
+      "body": "正文，150-300字。按区域分述：先A股（沪深300/创业板指涨跌、成交量、市场宽度），再美股（标普500/纳斯达克涨跌、VIX恐慌指数），后港股（恒生指数）和日股（日经225）。如有资金流向（北向资金）、汇率（USD/CNY）、贵金属走势，一并简述。",
       "cited_metrics": [
-        {{"evidence_key": "overview.index.sh000300_change_pct", "label": "沪深300涨跌", "value": 0.5, "previous_value": null}}
+        {{"evidence_key": "overview.index.sh000300_change_pct", "label": "沪深300涨跌", "value": 0.5, "previous_value": null}},
+        {{"evidence_key": "overview.index.^GSPC_change_pct", "label": "标普500涨跌", "value": 0.3, "previous_value": null}}
       ],
       "missing_data_disclosure": []
     }},
@@ -95,10 +96,10 @@ REPORT_SYSTEM_PROMPT_TEMPLATE = """你是个人基金ETF投资建议系统的{re
 - 报告中的百分比、收益、分位数等数字必须来自证据包 metrics 或 sections。
 - 必须处理 evidence.challenge_review.must_address 和 action_boundaries 中的限制。
 - 不使用"稳赚、必涨、保证收益、无风险、满仓买入"等绝对化投资表述。
-- action_items 必须是具体、可执行的操作建议，如"定投沪深300维持每月5000元"、"科创50若跌破0.78则减仓50%"。"""
+- action_items 必须是具体、可执行的操作建议，如"定投沪深300维持每月5000元"、"纳斯达克ETF若跌破420则减仓30%"。"""
 
 
-REPORT_USER_PROMPT_TEMPLATE = """请根据以下证据包生成一份结构化的基金/ETF投资{report_label} JSON。
+REPORT_USER_PROMPT_TEMPLATE = """请根据以下证据包生成一份结构化的全球股市投资{report_label} JSON。
 
 输出要求：
 1. 严格遵循 JSON schema，所有字段必填。
@@ -166,10 +167,10 @@ def build_structured_report_prompt(
 # ---------------------------------------------------------------------------
 
 
-REPORT_SYSTEM_PROMPT_TEXT = """你是个人基金ETF投资建议系统的{report_label}撰写助手，面向基金/ETF个人投资者输出中文{report_label}。
+REPORT_SYSTEM_PROMPT_TEXT = """你是全球股市投资{report_label}撰写助手，面向个人投资者输出中文{report_label}。你的读者关注全球主要股票市场（A股、美股、港股、日股等）的整体走势和交易机会。
 
 请严格使用以下6段式结构：
-一、{scope}概览 — 先报主要指数当日涨跌（沪深300/创业板指等）和成交量变化，再列关键事件2-3条（从evidence.key_events提取），后给总体判断（进攻/防守/观望）并简述理由。如有市场宽度（涨跌板块比例）和资金流向（北向资金等），一并说明。
+一、{scope}概览 — 全景扫描全球主要市场：先报A股主要指数当日涨跌（沪深300/创业板指/上证指数）和成交量变化，再报美股表现（标普500/纳斯达克涨跌及VIX恐慌指数），接着简述港股（恒生指数）和日股（日经225）走势。如有资金流向（北向资金）、汇率（USD/CNY）、贵金属（黄金走势及与股市相关性），一并说明。后列关键事件2-3条（从evidence.key_events提取），最后给总体判断（进攻/防守/观望）并简述理由。
 二、方向信号 — 趋势+情绪综合分析→仓位建议（含术语解释）
 三、板块机会 — {scope}强势板块、值得关注的ETF（给代码和名称）。如有贵金属/商品数据（黄金、白银），需在本节分析贵金属走势、与股市的相关性或背离信号。
 四、估值温度 — 当前贵还是便宜、定投是否继续（解释分位数含义）

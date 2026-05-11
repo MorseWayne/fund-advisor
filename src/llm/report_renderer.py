@@ -20,7 +20,7 @@ def render_structured_report(report: "StructuredReport") -> str:
     lines: list[str] = []
 
     # Header
-    lines.append(f"📊 {report.date} 投资{report.period_label}")
+    lines.append(f"📊 {report.date} 全球市场{report.period_label}")
     lines.append("")
 
     # Change summary — front-loaded, most important

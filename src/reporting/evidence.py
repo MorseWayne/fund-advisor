@@ -169,6 +169,18 @@ def _collect_metrics(sections: Mapping[str, object], as_of: str) -> list[Evidenc
     if isinstance(breadth, dict):
         _add_metric(metrics, "overview.up_pct", "上涨板块占比", breadth.get("up_pct"), "sections.overview.market_breadth.up_pct", as_of, "percent")
 
+    global_context = overview.get("global_context")
+    if isinstance(global_context, dict):
+        vix = global_context.get("vix")
+        if isinstance(vix, dict) and vix.get("value") is not None:
+            _add_metric(metrics, "overview.vix", "VIX恐慌指数", vix["value"], "sections.overview.global_context.vix.value", as_of)
+        usdcny = global_context.get("usdcny")
+        if usdcny is not None:
+            _add_metric(metrics, "overview.usdcny", "美元/人民币", usdcny, "sections.overview.global_context.usdcny", as_of)
+        us10y = global_context.get("us10y")
+        if us10y is not None:
+            _add_metric(metrics, "overview.us10y", "美10年期国债收益率", us10y, "sections.overview.global_context.us10y", as_of, "percent")
+
     trend = _record(sections.get("trend"))
     _add_metric(metrics, "trend.standing_line_ratio", "站线比例", trend.get("standing_line_ratio"), "sections.trend.standing_line_ratio", as_of, "percent")
     _add_metric(metrics, "trend.sentiment_score", "情绪分数", trend.get("sentiment_score"), "sections.trend.sentiment_score", as_of)
@@ -215,7 +227,7 @@ def _build_section_briefs(
         ReportSectionBrief(
             key="overview",
             title=f"一、{scope}概览",
-            objective="先列主要指数涨跌和成交量变化，再报关键事件2-3条（从key_events提取），后给总体判断（进攻/防守/观望）并简述理由。有市场宽度（上涨板块占比）和资金流向时一并说明。",
+            objective="全景扫描全球主要市场：分A股（沪深300/创业板指涨跌、成交量、市场宽度）、美股（标普500/纳斯达克涨跌、VIX恐慌指数）、港股（恒生指数）、日股（日经225）逐一简述。如有资金流向（北向资金）、汇率（USD/CNY）、美债收益率、贵金属走势，一并说明。后列关键事件2-3条，最后给总体判断（进攻/防守/观望）并简述理由。",
             conclusion_hint=_overview_conclusion_hint(overview),
             evidence_keys=_metric_keys(metrics, ("overview.",)),
             missing_data=_missing_for(missing_data, "overview"),
@@ -278,6 +290,14 @@ def _overview_conclusion_hint(overview: Mapping[str, object]) -> str:
         down = breadth.get("down")
         if up is not None and down is not None:
             parts.append(f"{up}涨{down}跌")
+    global_context = overview.get("global_context")
+    if isinstance(global_context, dict):
+        vix = global_context.get("vix")
+        if isinstance(vix, dict) and vix.get("level") is not None:
+            parts.append(f"VIX{vix['level']}")
+        usdcny = global_context.get("usdcny")
+        if usdcny is not None:
+            parts.append(f"汇率{usdcny}")
     events = overview.get("key_events")
     if isinstance(events, list) and events:
         parts.append(f"{len(events)}条关键事件")
