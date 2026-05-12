@@ -78,6 +78,36 @@ def _normalize_etf_record(raw_record: Any) -> dict[str, Any] | None:
     return record
 
 
+def _valuation_rows(raw_valuation: Any) -> list[dict[str, Any]]:
+    """Coerce fetch_valuation_data output into the row shape upsert_valuation expects.
+
+    The collector returns one dict like ``{index_code, pe_ratio, pb_ratio,
+    pe_percentile, pb_percentile, ...}`` but the storage layer wants a list of
+    rows keyed by ``pe_current / pb_current``. We translate names here so
+    neither side has to know about the other.
+    """
+    if isinstance(raw_valuation, dict):
+        items: list[dict[str, Any]] = [raw_valuation]
+    elif isinstance(raw_valuation, list):
+        items = [v for v in raw_valuation if isinstance(v, dict)]
+    else:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        code = item.get("index_code")
+        if not code:
+            continue
+        rows.append({
+            "index_code": code,
+            "pe_current": item.get("pe_current") or item.get("pe_ratio"),
+            "pe_percentile": item.get("pe_percentile"),
+            "pb_current": item.get("pb_current") or item.get("pb_ratio"),
+            "pb_percentile": item.get("pb_percentile"),
+        })
+    return rows
+
+
 class DataPipeline:
     def __init__(self, config: Optional[AppConfig] = None):
         self.config = config or load_config()
@@ -339,7 +369,7 @@ class DataPipeline:
 
         self.db.upsert_macro(today, macro)
         self.db.upsert_news(today, [n.get("title", n) if isinstance(n, dict) else n for n in news])
-        self.db.upsert_valuation(today, a_share_data.get("valuation", []))
+        self.db.upsert_valuation(today, _valuation_rows(a_share_data.get("valuation")))
 
         from src.data.models import IndexData, ETFData, SectorData, FundFlowData
         index_configs = {

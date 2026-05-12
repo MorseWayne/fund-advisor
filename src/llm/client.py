@@ -232,22 +232,43 @@ class LLMClient:
 
     @staticmethod
     def _extract_content(response_json: dict[str, object]) -> str:
+        """Pull text out of an OpenAI-compatible chat completion response.
+
+        Standard path: ``choices[0].message.content``. For reasoning models
+        (DeepSeek-R1, QwQ, deepseek-v*-pro, ...) some gateways route the
+        answer to ``reasoning_content`` and leave ``content`` empty; we fall
+        back to that, then to ``reasoning``. If everything is empty we raise
+        a ValueError carrying a one-line snapshot of the response (finish
+        reason, usage, present keys) so the log immediately shows whether
+        the model was truncated, refused, or simply mis-routed.
+        """
         choices_obj = response_json.get("choices")
         if not isinstance(choices_obj, list) or not choices_obj:
-            raise ValueError("LLM response contains no choices")
+            raise ValueError(f"LLM response contains no choices: {_response_snapshot(response_json)}")
         choices = cast(list[object], choices_obj)
         first_choice = choices[0]
         if not isinstance(first_choice, Mapping):
-            raise ValueError("LLM response choice is malformed")
+            raise ValueError(f"LLM response choice is malformed: {_response_snapshot(response_json)}")
         first_choice_map = cast(Mapping[str, object], first_choice)
         message = first_choice_map.get("message")
         if not isinstance(message, Mapping):
-            raise ValueError("LLM response message is malformed")
+            raise ValueError(f"LLM response message is malformed: {_response_snapshot(response_json)}")
         message_map = cast(Mapping[str, object], message)
-        content = message_map.get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError("LLM response content is empty")
-        return content.strip()
+
+        for field in ("content", "reasoning_content", "reasoning"):
+            value = message_map.get(field)
+            if isinstance(value, str) and value.strip():
+                if field != "content":
+                    logger.warning(
+                        "LLM content empty, falling back to '{}' field "
+                        "(reasoning model output not merged by gateway)",
+                        field,
+                    )
+                return value.strip()
+
+        raise ValueError(
+            f"LLM response content is empty: {_response_snapshot(response_json)}"
+        )
 
     async def generate_json(
         self,
@@ -341,6 +362,43 @@ class LLMClient:
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
+
+
+def _response_snapshot(response_json: dict[str, object]) -> str:
+    """One-line diagnostic summary of an LLM response.
+
+    Surfaces ``finish_reason``, ``usage``, and which message fields are present
+    so empty-content failures show their root cause in the log without
+    dumping the whole payload.
+    """
+    bits: list[str] = []
+    choices = response_json.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], Mapping) else None
+        if first is not None:
+            finish_reason = first.get("finish_reason")
+            if finish_reason:
+                bits.append(f"finish_reason={finish_reason}")
+            message = first.get("message")
+            if isinstance(message, Mapping):
+                present = sorted(
+                    k for k, v in message.items()
+                    if isinstance(v, str) and v.strip() or (not isinstance(v, str) and v not in (None, [], {}))
+                )
+                bits.append(f"message_keys={present}")
+            else:
+                bits.append("message=None")
+    else:
+        bits.append("choices=empty")
+    usage = response_json.get("usage")
+    if isinstance(usage, Mapping):
+        compact = {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens", "total_tokens") if k in usage}
+        if compact:
+            bits.append(f"usage={compact}")
+    top_keys = sorted(k for k in response_json.keys() if k not in ("choices", "usage"))
+    if top_keys:
+        bits.append(f"top_keys={top_keys}")
+    return " ".join(bits) if bits else "(empty response)"
 
 
 def _extract_json(content: str) -> dict[str, object]:

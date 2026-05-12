@@ -2,7 +2,7 @@ import pytest
 import httpx
 
 import src.llm.client as client_module
-from src.llm.client import LLMClient, LLMClientError
+from src.llm.client import LLMClient, LLMClientError, _response_snapshot
 
 
 def test_from_config_reads_unified_llm_api_key(monkeypatch):
@@ -104,3 +104,73 @@ async def test_generate_retries_read_timeout(monkeypatch):
 
     assert result == "OK"
     assert calls == {"count": 2, "timeout": 123}
+
+
+def test_extract_content_normal_path():
+    text = LLMClient._extract_content(
+        {"choices": [{"message": {"content": "hello world"}}]}
+    )
+    assert text == "hello world"
+
+
+def test_extract_content_falls_back_to_reasoning_content(caplog):
+    """Reasoning models (DeepSeek-R1, QwQ, ...) sometimes leave content empty
+    and route output to reasoning_content. We must not error out in that case."""
+    text = LLMClient._extract_content(
+        {
+            "choices": [
+                {
+                    "message": {"content": "", "reasoning_content": "the answer is 42"},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    )
+    assert text == "the answer is 42"
+
+
+def test_extract_content_falls_back_to_reasoning_field():
+    text = LLMClient._extract_content(
+        {"choices": [{"message": {"content": None, "reasoning": "fallback text"}}]}
+    )
+    assert text == "fallback text"
+
+
+def test_extract_content_empty_raises_with_snapshot():
+    with pytest.raises(ValueError) as exc_info:
+        LLMClient._extract_content(
+            {
+                "choices": [
+                    {
+                        "message": {"content": "", "reasoning_content": "   "},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 4096, "total_tokens": 4196},
+            }
+        )
+    msg = str(exc_info.value)
+    assert "empty" in msg
+    assert "finish_reason=length" in msg
+    assert "completion_tokens" in msg
+
+
+def test_extract_content_no_choices_includes_snapshot():
+    with pytest.raises(ValueError) as exc_info:
+        LLMClient._extract_content({"error": {"message": "rate limited"}})
+    msg = str(exc_info.value)
+    assert "no choices" in msg
+    assert "top_keys=['error']" in msg
+
+
+def test_response_snapshot_compact_shape():
+    snap = _response_snapshot(
+        {
+            "choices": [{"finish_reason": "stop", "message": {"content": "x"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "id": "abc",
+        }
+    )
+    assert "finish_reason=stop" in snap
+    assert "completion_tokens" in snap
+    assert "top_keys=['id']" in snap
