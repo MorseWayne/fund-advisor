@@ -15,6 +15,9 @@ from loguru import logger
 T = TypeVar("T")
 
 _RETRYABLE_STATUS_CODES = {429, 503}
+_RATE_LIMIT_STATUS_CODES = {429}
+_RATE_LIMIT_TOKENS = ("429", "too many requests", "rate limit", "ratelimit")
+_TRANSIENT_TOKENS = ("503", "service unavailable", "502", "504", "bad gateway", "gateway timeout")
 
 
 async def retry_with_backoff(
@@ -22,18 +25,28 @@ async def retry_with_backoff(
     *,
     max_retries: int = 3,
     base_delay: float = 1.0,
-    max_delay: float = 30.0,
+    max_delay: float = 60.0,
+    rate_limit_base_delay: float = 10.0,
+    rate_limit_max_retries: int = 5,
     operation_name: str = "collector_call",
 ) -> T:
     """Run an operation with retryable HTTP backoff and jitter.
 
-    ``max_retries=3`` means one initial attempt plus three retries. When no
-    valid ``Retry-After`` header is present, delays are 1s, 2s, and 4s by
-    default, with up to 10% random jitter added.
+    Two retry regimes are used:
+
+    - ``429 / rate limit`` → slow path: up to ``rate_limit_max_retries`` retries
+      with exponential backoff starting at ``rate_limit_base_delay`` seconds.
+    - ``503 / transient network`` → fast path: up to ``max_retries`` retries
+      starting at ``base_delay`` seconds (1s, 2s, 4s by default).
+
+    Jitter of up to 10% is added to each delay. ``Retry-After`` headers take
+    precedence over both regimes when present.
     """
 
     last_error: Exception | None = None
-    for retry_index in range(max_retries + 1):
+    rate_limit_attempts = 0
+    transient_attempts = 0
+    while True:
         try:
             result = operation()
             if inspect.isawaitable(result):
@@ -41,18 +54,40 @@ async def retry_with_backoff(
             return cast(T, result)
         except Exception as exc:
             last_error = exc
-            if retry_index >= max_retries or not _is_retryable_error(exc):
+            kind = _classify_error(exc)
+            if kind is None:
                 raise
 
-            retry_number = retry_index + 1
-            delay = _retry_delay(exc, retry_number, base_delay=base_delay, max_delay=max_delay)
+            if kind == "rate_limit":
+                rate_limit_attempts += 1
+                if rate_limit_attempts > rate_limit_max_retries:
+                    raise
+                delay = _retry_delay(
+                    exc,
+                    rate_limit_attempts,
+                    base_delay=rate_limit_base_delay,
+                    max_delay=max_delay,
+                )
+                attempt_label = f"{rate_limit_attempts}/{rate_limit_max_retries}"
+            else:
+                transient_attempts += 1
+                if transient_attempts > max_retries:
+                    raise
+                delay = _retry_delay(
+                    exc,
+                    transient_attempts,
+                    base_delay=base_delay,
+                    max_delay=max_delay,
+                )
+                attempt_label = f"{transient_attempts}/{max_retries}"
+
             jitter = random.uniform(0, delay * 0.1)
             total_delay = min(delay + jitter, max_delay)
             logger.warning(
-                "Retryable collector call failed operation={} attempt={}/{} delay={:.2f}s error={}",
+                "Retryable collector call failed operation={} kind={} attempt={} delay={:.2f}s error={}",
                 operation_name,
-                retry_number,
-                max_retries,
+                kind,
+                attempt_label,
                 total_delay,
                 exc,
             )
@@ -63,23 +98,24 @@ async def retry_with_backoff(
     raise RuntimeError(f"{operation_name} failed without an exception")
 
 
-def _is_retryable_error(exc: Exception) -> bool:
+def _classify_error(exc: Exception) -> str | None:
+    """Return ``"rate_limit"``, ``"transient"``, or ``None`` (non-retryable)."""
     status_code = _extract_status_code(exc)
+    if status_code in _RATE_LIMIT_STATUS_CODES:
+        return "rate_limit"
     if status_code in _RETRYABLE_STATUS_CODES:
-        return True
+        return "transient"
 
     message = str(exc).lower()
-    return any(
-        token in message
-        for token in (
-            "429",
-            "too many requests",
-            "rate limit",
-            "ratelimit",
-            "503",
-            "service unavailable",
-        )
-    )
+    if any(token in message for token in _RATE_LIMIT_TOKENS):
+        return "rate_limit"
+    if any(token in message for token in _TRANSIENT_TOKENS):
+        return "transient"
+    return None
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    return _classify_error(exc) is not None
 
 
 def _retry_delay(exc: Exception, retry_number: int, *, base_delay: float, max_delay: float) -> float:

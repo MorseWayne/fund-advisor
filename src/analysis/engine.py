@@ -27,8 +27,10 @@ from src.analysis.rotation import (
 )
 from src.analysis.trend import (
     calc_ma_alignment,
+    calc_multi_timeframe_signal,
     calc_sentiment,
     calc_standing_line_ratio,
+    calc_volume_confirmation,
 )
 from src.analysis.valuation import (
     assess_overall_valuation,
@@ -36,6 +38,7 @@ from src.analysis.valuation import (
     calc_pe_percentile,
     detect_etf_premium_alerts,
 )
+from src.analysis.aggregator import apply_window_changes
 
 
 DEFAULT_ANALYSIS_CONFIG: dict[str, Any] = {
@@ -56,14 +59,17 @@ class AnalysisEngine:
         self.config: dict[str, Any] = _deep_merge(DEFAULT_ANALYSIS_CONFIG, dict(config or {}))
         self.db = db
 
-    def analyze(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+    def analyze(self, snapshot: Any, *, window_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
         """Run all indicator modules against a processed market snapshot.
 
         Missing inputs produce ``None`` metrics rather than exceptions. The return
         value uses plain dictionaries/lists and avoids Pydantic/dataclass models.
+
+        If *window_snapshot* is provided, daily ``change_pct`` values on indices
+        and ETFs are replaced with window-aggregated changes (e.g. weekly return).
         """
 
-        snapshot = dict(snapshot or {})
+        snapshot = _record(snapshot)
         date = snapshot.get("date")
         indices = _records(snapshot.get("indices"), key_field="code")
         etfs = _records(snapshot.get("etfs"), key_field="code")
@@ -71,6 +77,11 @@ class AnalysisEngine:
         fund_flows = _record(snapshot.get("fund_flows"))
         macro = _record(snapshot.get("macro"))
         valuation_input = _record(snapshot.get("valuation"))
+        precious_metals = _record(snapshot.get("precious_metals"))
+        news = _news_headlines(snapshot)
+
+        if window_snapshot:
+            apply_window_changes(indices, etfs, window_snapshot)
 
         if self.db is not None:
             self._load_history_from_db(snapshot, indices, etfs)
@@ -79,8 +90,9 @@ class AnalysisEngine:
         rotation_result = self._analyze_rotation(sectors, fund_flows, macro)
         valuation_result = self._analyze_valuation(indices, etfs, macro, valuation_input)
         risk_alerts, risk_metrics = self._analyze_risk(snapshot, indices, etfs)
+        gold_result = self._analyze_precious_metals(precious_metals)
 
-        overview = self._build_overview(trend_result, valuation_result, risk_alerts)
+        overview = self._build_overview(indices, sectors, fund_flows, macro, news, trend_result, valuation_result, risk_alerts)
         sector_opportunities = self._build_sector_opportunities(rotation_result.get("momentum_ranking"))
 
         return {
@@ -94,6 +106,7 @@ class AnalysisEngine:
             "daily_report_text": "",
             "rotation": rotation_result,
             "risk_metrics": risk_metrics,
+            "precious_metals": gold_result,
         }
 
     def _load_history_from_db(
@@ -162,6 +175,19 @@ class AnalysisEngine:
         position_advice = _position_advice(ma_alignment, standing_line_ratio, standing_threshold)
         confidence = _trend_confidence(ma_alignment, standing_line_ratio, sentiment)
 
+        # Volume-price confirmation
+        volume_confirmation = None
+        if price_series is not None and len(price_series) >= 20:
+            vol_series = _volume_series_from_snapshot(snapshot, indices, db=self.db)
+            volume_confirmation = calc_volume_confirmation(
+                price_series, vol_series,
+            )
+
+        # Multi-timeframe signal
+        multi_timeframe = None
+        if price_series is not None and len(price_series) >= 125:
+            multi_timeframe = calc_multi_timeframe_signal(price_series)
+
         return {
             "ma_alignment": ma_alignment,
             "standing_line_ratio": standing_line_ratio,
@@ -170,6 +196,8 @@ class AnalysisEngine:
             "sentiment_score": sentiment.get("score") if sentiment else None,
             "position_advice": position_advice,
             "confidence": confidence,
+            "volume_confirmation": volume_confirmation,
+            "multi_timeframe": multi_timeframe,
         }
 
     def _analyze_rotation(
@@ -237,16 +265,39 @@ class AnalysisEngine:
         correlation_threshold = float(_config_get(self.config, "risk", "correlation_warning", default=0.8))
 
         alerts: list[dict[str, Any]] = []
-        for asset in [*indices, *etfs]:
+
+        # Only check major indices and held ETFs for anomaly volatility,
+        # not the entire 1400+ ETF universe (which produces excessive noise).
+        # Read portfolio codes directly since portfolio_status is added after analysis
+        holdings_codes = _load_portfolio_codes()
+
+        major_index_codes = {
+            "sh000001", "sh000300", "sh000016", "sh000688",
+            "sz399001", "sz399006", "^GSPC", "^IXIC", "^HSI", "^N225",
+        }
+
+        assets_to_check: list[dict[str, Any]] = []
+        for idx in indices:
+            code = str(idx.get("code") or idx.get("symbol") or "")
+            if code in major_index_codes:
+                assets_to_check.append(idx)
+        for etf in etfs:
+            code = str(etf.get("code") or "")
+            if code in holdings_codes:
+                assets_to_check.append(etf)
+
+        for asset in assets_to_check:
             change_pct = _first_number(asset, ("change_pct",))
             if change_pct is None or not detect_anomaly_volatility(change_pct, anomaly_threshold):
                 continue
             code = str(asset.get("code") or asset.get("symbol") or asset.get("name") or "未知资产")
             name = str(asset.get("name") or code)
+            # change_pct is a ratio (e.g. 0.031 for 3.1%), format as percentage
+            pct_display = change_pct * 100
             alerts.append({
                 "level": "warning",
                 "alert_type": "异常波动",
-                "message": f"{name} 单日涨跌幅 {change_pct:.2f}% 超过阈值",
+                "message": f"{name} 单日涨跌幅 {pct_display:+.2f}% 超过阈值({anomaly_threshold*100:.0f}%)",
                 "affected_assets": [code],
             })
 
@@ -280,7 +331,13 @@ class AnalysisEngine:
         }
 
     @staticmethod
+    @staticmethod
     def _build_overview(
+        indices: list[dict[str, Any]],
+        sectors: list[dict[str, Any]],
+        fund_flows: Mapping[str, Any],
+        macro: Mapping[str, Any],
+        news: list[str],
         trend_result: Mapping[str, Any],
         valuation_result: Mapping[str, Any],
         risk_alerts: Sequence[Mapping[str, Any]],
@@ -298,7 +355,7 @@ class AnalysisEngine:
         else:
             direction = "观望"
 
-        parts = []
+        parts: list[str] = []
         if ma_alignment:
             parts.append(f"趋势{ma_alignment}")
         if valuation_level:
@@ -307,7 +364,21 @@ class AnalysisEngine:
             parts.append(f"触发{len(risk_alerts)}项风险提示")
         summary = "，".join(parts) if parts else "数据不足，维持观望。"
 
-        return {"summary": summary, "direction": direction, "key_events": []}
+        index_snapshot = _build_index_snapshot(indices)
+        market_breadth = _build_market_breadth(sectors)
+        fund_flow_direction = _build_fund_flow_direction(fund_flows)
+        key_events = news[:3] if news else []
+        global_context = _build_global_context(indices, macro)
+
+        return {
+            "summary": summary,
+            "direction": direction,
+            "key_events": key_events,
+            "index_snapshot": index_snapshot,
+            "market_breadth": market_breadth,
+            "fund_flow_direction": fund_flow_direction,
+            "global_context": global_context,
+        }
 
     @staticmethod
     def _build_sector_opportunities(momentum_ranking: Any) -> list[dict[str, Any]]:
@@ -326,6 +397,67 @@ class AnalysisEngine:
                 "momentum_rank": rank,
             })
         return opportunities
+
+    @staticmethod
+    def _analyze_precious_metals(pm: dict[str, Any]) -> dict[str, Any]:
+        """Build gold/precious metals summary from collected data."""
+        result: dict[str, Any] = {}
+
+        gold_spot = pm.get("gold_spot") or {}
+        result["gold_spot_price"] = gold_spot.get("price")
+        result["gold_spot_change_5d"] = gold_spot.get("change_5d")
+
+        comex = pm.get("comex_gold") or {}
+        result["comex_gold_price"] = comex.get("price")
+        result["comex_gold_change_pct"] = comex.get("change_pct")
+        result["comex_gold_name"] = comex.get("name")
+        comex_silver = pm.get("comex_silver") or {}
+        result["comex_silver_price"] = comex_silver.get("price")
+        result["comex_silver_change_pct"] = comex_silver.get("change_pct")
+
+        concept = pm.get("gold_concept") or {}
+        latest_concept = concept.get("latest") or {}
+        concept_records = concept.get("records") or []
+        concept_change_pct = None
+        if concept_records and len(concept_records) >= 2:
+            try:
+                prev_close = float(concept_records[-2].get("close") or 0)
+                curr_close = float(concept_records[-1].get("close") or 0)
+                if prev_close != 0:
+                    concept_change_pct = round((curr_close - prev_close) / prev_close * 100, 2)
+            except (TypeError, ValueError):
+                pass
+        result["gold_concept_change_pct"] = concept_change_pct
+
+        gold_etfs = pm.get("gold_etfs") or []
+        result["gold_etfs"] = gold_etfs
+
+        # Determine gold direction signal
+        spot_5d = result.get("gold_spot_change_5d")
+        comex_pct = result.get("comex_gold_change_pct")
+        concept_pct = result.get("gold_concept_change_pct")
+
+        signals = []
+        if spot_5d is not None:
+            signals.append("spot" if spot_5d >= 0 else "spot")
+        if comex_pct is not None:
+            signals.append(comex_pct >= 0)
+        if concept_pct is not None:
+            signals.append(concept_pct >= 0)
+
+        if signals:
+            up_count = sum(1 for s in signals if s)
+            if up_count == len(signals):
+                direction = "gold_up"
+            elif up_count == 0:
+                direction = "gold_down"
+            else:
+                direction = "gold_mixed"
+        else:
+            direction = None
+
+        result["direction"] = direction
+        return result
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -461,6 +593,37 @@ def _returns_from_price_history(candidate: Any) -> list[float]:
     return [float(item) for item in returns.tolist() if np.isfinite(item)]
 
 
+def _volume_series_from_snapshot(
+    snapshot: Mapping[str, Any],
+    indices: list[dict[str, Any]],
+    db: Any | None = None,
+) -> list[float] | None:
+    """Extract volume history from snapshot, indices, or DB.
+    
+    Returns a list of volume values in chronological order, or None.
+    """
+    # Try volume data from primary index
+    primary_index = _primary_index(indices)
+    if primary_index:
+        for key in ("volume_history", "volumes"):
+            series = _series_from_history(primary_index.get(key), value_keys=("volume", "vol"))
+            if series is not None and not series.empty:
+                return series.tolist()
+
+    # Try DB
+    if db is not None and primary_index:
+        code = str(primary_index.get("code") or primary_index.get("symbol") or "")
+        get_history = getattr(db, "get_historical_index", None)
+        if code and callable(get_history):
+            series = _series_from_history(
+                get_history(code, days=252), value_keys=("volume", "vol")
+            )
+            if series is not None and not series.empty:
+                return series.tolist()
+
+    return None
+
+
 def _series_from_history(candidate: Any, *, value_keys: Sequence[str]) -> pd.Series | None:
     if candidate is None:
         return None
@@ -520,6 +683,117 @@ def _advance_decline_ratio(macro: Mapping[str, Any], etfs: list[dict[str, Any]])
     return advances / max(declines, 1)
 
 
+_KEY_INDEX_CODES = {
+    # A股核心指数
+    "sh000300", "000300",  # 沪深300
+    "sh000001",            # 上证指数
+    "sz399001", "399001",  # 深证成指
+    "sz399006", "399006",  # 创业板指
+    # 全球主要指数
+    "^GSPC",               # 标普500
+    "^IXIC",               # 纳斯达克
+    "^HSI",                # 恒生指数
+    "^N225",               # 日经225
+    "^STOXX50E",           # 欧洲斯托克50
+}
+
+
+def _news_headlines(snapshot: Mapping[str, Any]) -> list[str]:
+    raw = snapshot.get("news_headlines")
+    if isinstance(raw, list):
+        return [str(item) for item in raw if item]
+    return []
+
+
+def _build_index_snapshot(indices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not indices:
+        return []
+
+    key_map: dict[str, dict[str, Any]] = {}
+    for idx in indices:
+        code = str(idx.get("code") or "")
+        if code in _KEY_INDEX_CODES:
+            key_map[code] = idx
+
+    result: list[dict[str, Any]] = []
+    for code in _KEY_INDEX_CODES:
+        if code in key_map:
+            result.append(_compact_index(key_map[code]))
+
+    if not result:
+        for idx in indices[:3]:
+            result.append(_compact_index(idx))
+    return result
+
+
+def _compact_index(idx: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "code": idx.get("code"),
+        "name": idx.get("name"),
+        "price": idx.get("price"),
+        "change_pct": idx.get("change_pct"),
+        "pe_ratio": idx.get("pe_ratio"),
+    }
+
+
+def _build_market_breadth(sectors: list[dict[str, Any]]) -> dict[str, Any]:
+    if not sectors:
+        return {}
+    up = 0
+    down = 0
+    for s in sectors:
+        change = _as_number(s.get("change_pct"))
+        if change is None:
+            continue
+        if change > 0:
+            up += 1
+        elif change < 0:
+            down += 1
+    total = len(sectors)
+    up_pct = round(up / total * 100, 1) if total > 0 else 0
+    return {"total": total, "up": up, "down": down, "up_pct": up_pct}
+
+
+def _build_fund_flow_direction(fund_flows: Mapping[str, Any]) -> str | None:
+    nb = _as_number(fund_flows.get("north_bound"))
+    if nb is None:
+        return None
+    if nb > 0:
+        return "north_inflow"
+    if nb < 0:
+        return "north_outflow"
+    return "north_flat"
+
+
+_GLOBAL_INDEX_CODES = {"^GSPC", "^IXIC", "^HSI", "^N225", "^STOXX50E"}
+
+
+def _build_global_context(
+    indices: list[dict[str, Any]],
+    macro: Mapping[str, Any],
+) -> dict[str, Any]:
+    vix_value = _as_number(macro.get("vix"))
+    usdcny_value = _as_number(macro.get("usdcny"))
+    us10y_value = _as_number(macro.get("us10y"))
+
+    global_snapshot: dict[str, dict[str, Any]] = {}
+    for idx in indices:
+        code = str(idx.get("code") or "")
+        if code in _GLOBAL_INDEX_CODES:
+            global_snapshot[code] = _compact_index(idx)
+
+    context: dict[str, Any] = {"global_indices": global_snapshot}
+    if vix_value is not None:
+        vix_level = "恐慌" if vix_value > 25 else ("警惕" if vix_value > 20 else "平稳")
+        context["vix"] = {"value": round(vix_value, 2), "level": vix_level}
+    if usdcny_value is not None:
+        context["usdcny"] = round(usdcny_value, 4)
+    if us10y_value is not None:
+        context["us10y"] = round(us10y_value, 2)
+
+    return context
+
+
 def _returns_from_snapshot(snapshot: Mapping[str, Any], etfs: list[dict[str, Any]]) -> dict[str, list[float]]:
     raw_returns = snapshot.get("etf_returns") or snapshot.get("returns")
     if isinstance(raw_returns, Mapping):
@@ -557,3 +831,21 @@ def _trend_confidence(
     if sentiment is not None:
         score += 0.3
     return round(score, 2)
+
+
+def _load_portfolio_codes() -> set[str]:
+    """Read portfolio.yaml and return the set of held ETF codes."""
+    from pathlib import Path
+    import yaml
+
+    path = Path("portfolio.yaml")
+    if not path.exists():
+        return set()
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        holdings = raw.get("holdings", []) if raw else []
+        return {str(h["code"]) for h in holdings if isinstance(h, dict) and "code" in h}
+    except Exception:
+        return set()

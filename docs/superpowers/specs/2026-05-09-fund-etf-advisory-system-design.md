@@ -1,7 +1,7 @@
 # 个人基金ETF投资建议系统 — 设计文档
 
 **日期**: 2026-05-09  
-**状态**: 设计中  
+**状态**: 基础系统已实现，持续优化中  
 **类型**: 新系统  
 
 ---
@@ -21,40 +21,48 @@
 构建一个自动化的投资建议系统，能够：
 1. 每日自动采集A股+全球市场数据
 2. 计算量化指标，识别投资机会和风险
-3. 通过LLM生成简洁易懂的日报（面向初学者）
+3. 通过LLM生成简洁易懂的日报、周报或月报（面向初学者）
 4. 通过微信/飞书推送日报，异常信号即时推送
 5. 提供Web看板用于深度查看和分析
+
+### 当前实现快照（2026-05-10）
+- CLI 已提供 `once` 和 `scheduler` 两种运行模式，Web 看板由 Streamlit 提供。
+- 数据层已实现 AKShare、yfinance 采集、SQLite WAL 存储、历史 OHLCV 增量回填和快照质量校验。
+- 分析层已实现趋势、轮动、估值、异常波动、最大回撤、相关性和持仓盈亏分析。
+- LLM 层已改为 OpenAI-compatible Chat Completions 接口，支持 OpenAI、SiliconFlow、Moonshot 和本地兼容服务。
+- 报告层已实现证据包、反方审查、历史上下文、同周期变化摘要、确定性校验、质量评分和 JSONL 审计日志。
+- 看板已包含 ETF 排行榜、行业热力图、持仓收益、日报回顾、报告质量追踪和手动触发即时分析。
 
 ---
 
 ## 2. 系统架构
 
-三层架构：
+分层架构：
 
 ```
-数据层（每日盘后）→ 分析层（量化指标 + LLM）→ 交付层（推送 + Web看板）
+数据层（每日盘后）→ 分析层（量化指标）→ 报告层（证据包 + LLM/规则回退 + 质量校验）→ 交付层（推送 + Web看板）
 ```
 
 ### 运行节奏
 | 频率 | 动作 |
 |------|------|
-| 每日盘后 | 数据采集 → 指标计算 → LLM生成日报 → 推送 |
+| 每日盘后 | 数据采集 → 指标计算 → 生成证据包 → LLM/规则报告 → 校验评分 → 审计 → 推送 |
 | 交易时段 | 每5分钟轮询异常波动检测 → 触发阈值即时推送 |
-| 每月 | 组合体检 + 再平衡建议 |
+| 周末/月末 | 根据日期自动生成周报/月报，并与上一期同周期报告做变化对比 |
 
 ---
 
 ## 3. 数据层
 
-### 数据源（全部免费）
+### 数据源（当前实现）
 | 来源 | 覆盖范围 | 数据类型 |
 |------|----------|----------|
-| AKShare | A股 | ETF实时净值/折溢价（`fund_etf_spot_em`）、行业指数涨跌、北向资金/主力资金流向、PE/PB历史分位（`stock_a_pe_and_pb`）、财经新闻（`stock_news_em`）、PMI/CPI/社融（不定期） |
-| yfinance | 全球 | 美股ETF（SPY/QQQ/IWM等）、全球指数（标普/纳指/恒生/日经）、VIX指数、汇率USD/CNY |
-| pandas-datareader (FRED) | 全球宏观 | 美债收益率曲线、美元指数 |
+| AKShare | A股 | ETF实时行情、主要指数、行业排名、北向/主力资金流向、PE/PB估值、财经新闻、中国10年期国债收益率、CPI/GDP/PMI等宏观数据 |
+| yfinance | 全球 | 美股ETF（SPY/QQQ/IWM等）、全球指数（标普/纳指/恒生/日经/欧洲50）、VIX、USD/CNY、美国3月/5年/10年期收益率 |
 
 ### 存储
-- SQLite 单文件数据库，存储历史数据
+- SQLite 单文件数据库，存储行情、指数、行业、资金、宏观、新闻、估值和历史 OHLCV 数据
+- 报告审计写入 `data/reports/report-audit.jsonl`，便于保留原始文本、证据哈希、质量评分和验证结果
 - 结构简单，备份方便
 
 ### 采集频率
@@ -88,47 +96,61 @@
 - 最大回撤预警：组合回撤接近历史极值 → 减仓提醒
 - 相关性突变：持仓间相关性突然升高 → 分散化失效警告
 
-### 4.2 LLM日报生成
+### 4.2 LLM报告生成与质量控制
 
 #### 输入
 - 上述所有量化指标的计算结果
 - 当日主要指数涨跌数据
 - 近期（1周内）重大财经新闻标题
 
-#### 输出：每日投资日报（6段式）
+#### 输出：投资日报/周报/月报（6段式）
+
+报告周期由 `select_report_period()` 自动选择：月末生成月报，周末生成周报，其余日期生成日报。
 
 | 段落 | 内容 |
 |------|------|
-| 一、今日概览 | 主要指数涨跌、关键事件、总体判断（进攻/防守/观望） |
+| 一、今日/本周/本月概览 | 主要指数涨跌、关键事件、总体判断（进攻/防守/观望） |
 | 二、方向信号 | 趋势+情绪综合分析 → 仓位建议（含术语解释） |
-| 三、板块机会 | 今日强势板块、值得关注的ETF（给代码和名称） |
+| 三、板块机会 | 本周期强势板块、值得关注的ETF（给代码和名称） |
 | 四、估值温度 | 当前贵还是便宜、定投是否继续（解释分位数含义） |
 | 五、风险提醒 | 需要警惕的信号及原因 |
-| 六、你的持仓 | 今日涨跌、是否需要调整 |
+| 六、你的持仓 | 最新涨跌、是否需要调整 |
+
+#### 证据优先生成链路
+
+1. `build_report_evidence()` 将 `AnalysisEngine` 输出转换成可审计证据包，包含可引用指标、章节 brief、缺失数据、风险标记和 source path。
+2. `ReportChallengeReview` 在提示词中加入反方审查，要求 LLM 先处理风险、缺失数据和行动边界。
+3. `ReportAuditLog` 读取上一期同周期报告，构造 `ReportMemoryContext`，只在上一期质量可用时作为弱复盘依据。
+4. `build_change_summary()` 对比站线比例、PE 分位数、组合收益、最大回撤和风险标记，提示本期最重要变化。
+5. `ReportGenerator` 调用 OpenAI-compatible LLM；当请求失败或返回空文本时，生成 deterministic fallback 报告。
+6. `ReportVerifier` 检查结构、日期、缺失数据披露、数字溯源和绝对化建议；`ReportEvaluator` 输出 A-D 质量评分。
+7. `ReportAuditLog.append()` 追加 JSONL 审计记录，供下一期报告和 Streamlit 质量追踪使用。
 
 #### 写作约束（面向初学者）
 - 可以使用金融术语，但必须在首次出现时用一句话解释
 - 先说结论再解释原因（"建议减仓，因为..."）
 - 给出具体标的代码和操作建议，不模糊
-- 日报总长度控制在手机一屏以内（约300-500字）
+- 报告总长度控制在手机一屏以内（约300-600字）
 - 不使用生活化比喻，保持专业简洁
+- 百分比、收益、分位数等数字必须来自证据包 `metrics` 或 `sections`
+- 不使用“稳赚、必涨、保证收益、无风险、满仓买入”等绝对化投资表述
 
 ---
 
 ## 5. 交付层
 
 ### 微信/飞书推送
-- **每日日报**: 盘后自动推送到微信/飞书
+- **每日/周末/月末报告**: 自动推送到微信/飞书
 - **异常预警**: 实时检测到异常波动立即推送
-- **月度体检**: 每月初推送持仓评估和再平衡建议
+- **质量提示**: 报告存在阻断项或缺失数据时，在正文和看板中提示复核
 - 实现方式：企业微信机器人 Webhook（免费）或飞书机器人
 
 ### Web看板 (Streamlit)
 - ETF排行榜 + 趋势图
 - 行业轮动热力图
 - 持仓收益追踪
-- 历史日报回顾
-- 手动触发即时分析
+- 历史日报回顾 + 报告质量追踪
+- 手动触发即时分析，并展示来源、验证结果、置信度、阻断项和同周期变化摘要
 
 ---
 
@@ -154,7 +176,7 @@ holdings:
     category: "overseas"
 ```
 
-系统读取此文件，在日报"你的持仓"部分计算当日涨跌和盈亏。Web 看板也基于此文件展示持仓收益。
+系统读取此文件，在报告“你的持仓”部分计算当日涨跌和盈亏。Web 看板也基于此文件展示持仓收益。
 
 ---
 
@@ -167,7 +189,7 @@ holdings:
 @dataclass
 class DailyMarketSnapshot:
     date: str                          # YYYY-MM-DD
-    indices: dict[str, float]          # {"上证指数": 3345.2, "标普500": 5234.1, ...}
+    indices: dict[str, IndexData]      # {"sh000300": IndexData(...), "^GSPC": IndexData(...)}
     etfs: list[ETFData]                # ETF价格/净值/折溢价列表
     sectors: dict[str, SectorData]     # 行业板块涨跌
     fund_flows: FundFlowData           # 北向/主力资金流向
@@ -176,7 +198,7 @@ class DailyMarketSnapshot:
     valuation: dict[str, float]        # 各指数PE/PB分位数
 ```
 
-**分析层 → 交付层**: `AnalysisResult`
+**分析层 → 报告层**: `AnalysisResult`
 ```python
 @dataclass
 class AnalysisResult:
@@ -187,8 +209,23 @@ class AnalysisResult:
     valuation: ValuationAssessment     # 估值温度
     risk_alerts: list[RiskAlert]       # 风险提醒
     portfolio_status: PortfolioStatus  # 持仓状态
-    daily_report_text: str             # LLM生成的日报全文
+    daily_report_text: str             # 兼容字段，当前报告生成由 ReportGenerator 完成
 ```
+
+**报告层 → 交付层**: `GeneratedReport`
+```python
+@dataclass
+class GeneratedReport:
+    text: str                          # 最终报告文本，可能包含质量提示
+    source: str                        # llm / fallback
+    evidence: ReportEvidence           # 本期证据包
+    verification: VerificationResult   # 确定性校验结果
+    quality_score: ReportQualityScore  # A-D质量评分和阻断项
+    memory_context: ReportMemoryContext
+    change_summary: ReportChangeSummary
+```
+
+为兼容已有调用方，`generate_daily_report()` 仍返回 `str`；看板等需要质量上下文的调用方使用 `generate_daily_report_bundle()`。
 
 ---
 
@@ -196,22 +233,23 @@ class AnalysisResult:
 
 | 层级 | 技术 | 说明 |
 |------|------|------|
-| 数据采集 | AKShare + yfinance + pandas-datareader | 全部开源免费 |
+| 数据采集 | AKShare + yfinance | 全部开源免费 |
 | 存储 | SQLite | 轻量单文件，无需运维 |
 | 计算 | pandas + numpy + ta (技术指标库) | Python生态 |
 | 调度 | APScheduler | 定时任务（每日盘后触发） |
-| LLM | OpenAI API / DeepSeek API / Ollama本地 | 按成本选择 |
+| LLM | OpenAI-compatible Chat Completions | 可接 OpenAI、SiliconFlow、Moonshot、本地兼容服务 |
+| 报告质量 | dataclass + JSONL 审计 | 证据包、校验、评分、历史变化追踪 |
 | Web | Streamlit | 纯Python，一行命令启动 |
 | 推送 | 企业微信/飞书 Webhook | 免费通道 |
 
-### LLM成本估算（每日一份日报）
+### LLM成本估算（每日一份报告）
 | 方案 | 单次成本 | 月成本 |
 |------|----------|--------|
 | GPT-4o-mini | ~￥0.01 | ~￥0.3 |
-| DeepSeek API | ~￥0.002 | ~￥0.06 |
+| SiliconFlow / Moonshot 等兼容服务 | 取决于模型 | 取决于模型 |
 | 本地Ollama+Qwen | ￥0 | ￥0（需GPU硬件） |
 
-推荐起步用 DeepSeek API（便宜+中文效果好），后续可选本地模型完全免费。
+推荐起步使用任一 OpenAI-compatible 低成本中文模型，后续可切换本地兼容服务。
 
 ---
 
@@ -242,25 +280,29 @@ class AnalysisResult:
 
 ## 10. 开发路线图
 
-### Phase 1: 核心管线（2-3天）
-- [ ] 数据采集模块：AKShare + yfinance 数据拉取，存入 SQLite
-- [ ] 指标计算模块：趋势/轮动/估值/风险 四个模块的 Python 实现
-- [ ] 定时调度：APScheduler 每日盘后自动运行
+### Phase 1: 核心管线（已完成基础版）
+- [x] 数据采集模块：AKShare + yfinance 数据拉取，存入 SQLite
+- [x] 历史 OHLCV 回填：ETF 和指数历史数据增量更新
+- [x] 指标计算模块：趋势/轮动/估值/风险 四个模块的 Python 实现
+- [x] 定时调度：APScheduler 每日盘后和盘中监控任务
 
-### Phase 2: LLM 日报（1-2天）
-- [ ] LLM 集成：接入 DeepSeek API，生成日报
-- [ ] Prompt 工程：设计面向初学者的日报输出模板
-- [ ] 微信推送：企业微信 Webhook 推送日报
+### Phase 2: LLM 报告（已完成基础版）
+- [x] LLM 集成：OpenAI-compatible Chat Completions
+- [x] Prompt 工程：六段式中文报告、证据包、反方审查、历史上下文
+- [x] 规则回退：LLM 不可用时输出 deterministic fallback 报告
+- [x] 微信/飞书推送：Webhook 推送报告和预警
 
-### Phase 3: Web 看板（1-2天）
-- [ ] Streamlit 应用：排行榜、趋势图、热力图、持仓追踪
-- [ ] 历史数据查询：日报回顾、指标回溯
+### Phase 3: Web 看板（已完成基础版）
+- [x] Streamlit 应用：排行榜、热力图、持仓收益、报告回顾、手动触发
+- [x] 报告质量面板：评分、验证通过率、阻断项、缺失数据和最近正文
 
-### Phase 4: 稳定与优化（持续）
-- [ ] 异常检测阈值调优
-- [ ] 持仓管理功能
-- [ ] 月度自动体检报告
-- [ ] 部署到云服务器
+### Phase 4: 稳定与优化（进行中）
+- [x] 报告质量校验：结构、数字溯源、绝对化建议、缺失数据披露
+- [x] 报告审计与变化摘要：JSONL 审计、同周期历史对比、回归用例
+- [ ] 结构化 LLM 输出：Pydantic 校验 JSON，再渲染为文本
+- [ ] 风险面板增强：持仓集中度、相关性趋势、异常信号回溯
+- [ ] 组合约束：仓位上限、定投规则、止盈止损提示
+- [ ] 云服务器部署与 systemd/反向代理模板
 
 ---
 

@@ -9,8 +9,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from src.config import load_config
 from src.data.pipeline import DataPipeline
 from src.analysis.engine import AnalysisEngine
+from src.analysis.aggregator import build_window_snapshot
 from src.llm.client import LLMClient
 from src.llm.report_generator import ReportGenerator
+from src.llm.report_period import report_period_english_label, report_period_label, select_report_period
 from src.notify.channels import NotificationManager, WeChatWorkChannel, FeishuChannel
 from src.utils.logging_config import setup_logging
 from src.scheduler.jobs import create_scheduler, schedule_daily_collection, schedule_intraday_monitor, is_trading_time
@@ -49,8 +51,10 @@ async def run_once():
     snapshot = await pipeline.run_daily_collection()
     portfolio = pipeline.calc_holding_status(snapshot)
 
-    engine = AnalysisEngine()
-    analysis = engine.analyze(snapshot)
+    engine = AnalysisEngine(db=pipeline.db)
+    report_period = select_report_period(snapshot.date)
+    window_overrides = build_window_snapshot(pipeline.db, str(snapshot.date), report_period)
+    analysis = engine.analyze(snapshot, window_snapshot=window_overrides)
     analysis["portfolio_status"] = {
         "holdings": [{"code": h.code, "name": h.name, "current_price": h.current_price,
                        "change_pct": h.change_pct, "profit_loss_pct": h.profit_loss_pct,
@@ -61,18 +65,14 @@ async def run_once():
         "total_profit_loss": portfolio.total_profit_loss,
     }
 
-    llm_client = LLMClient(
-        provider=config.llm.provider,
-        model=config.llm.model,
-        base_url=config.llm.base_url,
-        temperature=config.llm.temperature,
-        max_tokens=config.llm.max_tokens,
-    )
+    llm_client = LLMClient.from_config(config.llm)
     report_gen = ReportGenerator(llm_client)
-    report_text = await report_gen.generate_daily_report(analysis)
+    report_label = report_period_label(report_period)
+    bundle = await report_gen.generate_structured_report_bundle(analysis, report_period=report_period)
+    report_text = bundle.text
 
     print(f"\n{'='*60}")
-    print(f"  Fund-Advisor Daily Report: {snapshot.date}")
+    print(f"  Fund-Advisor {report_period_english_label(report_period)}: {snapshot.date}")
     print(f"{'='*60}")
     print(f"  A-Share Indices: {len([i for i in snapshot.indices if i.startswith('sh') or i.startswith('sz')])}")
     print(f"  Global Indices:  {len([i for i in snapshot.indices if i.startswith('^')])}")
@@ -85,7 +85,7 @@ async def run_once():
 
     nm = _setup_notification_manager(config)
     if nm.channels:
-        title = f"投资日报 {snapshot.date}"
+        title = f"投资{report_label} {snapshot.date}"
         await nm.broadcast(report_text, title=title)
 
     return snapshot
@@ -108,8 +108,10 @@ async def run_scheduled():
         try:
             snapshot = await pipeline.run_daily_collection()
             portfolio = pipeline.calc_holding_status(snapshot)
-            engine = AnalysisEngine()
-            analysis = engine.analyze(snapshot)
+            engine = AnalysisEngine(db=pipeline.db)
+            report_period = select_report_period(snapshot.date)
+            window_overrides = build_window_snapshot(pipeline.db, str(snapshot.date), report_period)
+            analysis = engine.analyze(snapshot, window_snapshot=window_overrides)
             analysis["portfolio_status"] = {
                 "holdings": [{"code": h.code, "name": h.name, "current_price": h.current_price,
                                "change_pct": h.change_pct, "profit_loss_pct": h.profit_loss_pct,
@@ -119,16 +121,14 @@ async def run_scheduled():
                 "total_change_pct": portfolio.total_change_pct,
                 "total_profit_loss": portfolio.total_profit_loss,
             }
-            llm_client = LLMClient(
-                provider=config.llm.provider, model=config.llm.model,
-                base_url=config.llm.base_url, temperature=config.llm.temperature,
-                max_tokens=config.llm.max_tokens,
-            )
+            llm_client = LLMClient.from_config(config.llm)
             report_gen = ReportGenerator(llm_client)
-            report_text = await report_gen.generate_daily_report(analysis)
+            report_label = report_period_label(report_period)
+            bundle = await report_gen.generate_structured_report_bundle(analysis, report_period=report_period)
+            report_text = bundle.text
             if nm.channels:
-                await nm.broadcast(report_text, title=f"投资日报 {snapshot.date}")
-            logger.info("Daily report generated and pushed")
+                await nm.broadcast(report_text, title=f"投资{report_label} {snapshot.date}")
+            logger.info("{} generated and pushed", report_label)
         except Exception as e:
             logger.error(f"Daily job failed: {e}")
 

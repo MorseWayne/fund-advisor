@@ -2,7 +2,9 @@
 
 from pathlib import Path
 from typing import Any
+import os
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel
 
 
@@ -10,6 +12,45 @@ class DataSourceConfig(BaseModel):
     enabled: bool = True
     rate_limit_seconds: float = 1.0
     cache_ttl_minutes: int = 10
+
+
+class StooqProviderConfig(BaseModel):
+    enabled: bool = True
+    base_url: str = "https://stooq.com"
+    timeout_seconds: float = 10.0
+    max_concurrency: int = 4
+
+
+class FREDProviderConfig(BaseModel):
+    enabled: bool = True
+    api_key_env: str = "FRED_API_KEY"
+    base_url: str = "https://api.stlouisfed.org"
+    timeout_seconds: float = 10.0
+
+
+class AKShareGlobalProviderConfig(BaseModel):
+    enabled: bool = True
+    rate_limit_seconds: float = 1.0
+
+
+class YFinanceProviderConfig(BaseModel):
+    enabled: bool = True
+    rate_limit_seconds: float = 0.5
+
+
+class GlobalMarketConfig(BaseModel):
+    providers: list[str] = ["stooq", "fred", "akshare_global", "yfinance"]
+    cache_ttl_hours: float = 6.0
+    stooq: StooqProviderConfig = StooqProviderConfig()
+    fred: FREDProviderConfig = FREDProviderConfig()
+    akshare_global: AKShareGlobalProviderConfig = AKShareGlobalProviderConfig()
+    yfinance: YFinanceProviderConfig = YFinanceProviderConfig()
+
+
+class HhxgConfig(BaseModel):
+    enabled: bool = True
+    base_url: str = "https://hhxg.top/static/data"
+    timeout_seconds: float = 15.0
 
 
 class StorageConfig(BaseModel):
@@ -51,12 +92,12 @@ class LLMReportConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: str = "deepseek"
-    model: str = "deepseek-chat"
-    api_key_env: str = "DEEPSEEK_API_KEY"
-    base_url: str = "https://api.deepseek.com/v1"
+    provider: str = "openai"
+    model: str = "gpt-4o-mini"
+    base_url: str = "https://api.openai.com/v1"
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = 32000
+    timeout_seconds: float = 600.0
     report: LLMReportConfig = LLMReportConfig()
 
 
@@ -95,6 +136,8 @@ class DataConfig(BaseModel):
     us_market_fetch_time: str = "08:00"
     sources: dict[str, DataSourceConfig] = {}
     storage: StorageConfig = StorageConfig()
+    global_market: GlobalMarketConfig = GlobalMarketConfig()
+    hhxg: HhxgConfig = HhxgConfig()
 
 
 class AppConfig(BaseModel):
@@ -108,11 +151,33 @@ class AppConfig(BaseModel):
 
 def load_config(config_path: str | Path = "config/config.yaml") -> AppConfig:
     """Load and validate configuration from YAML file."""
+    load_dotenv(dotenv_path=Path(".env"))
+
     path = Path(config_path)
     if not path.exists():
-        return AppConfig()
+        return AppConfig(**_apply_env_overrides({}))
 
     with open(path, "r", encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
 
-    return AppConfig(**raw)
+    return AppConfig(**_apply_env_overrides(raw))
+
+
+def _apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
+    """Apply deployment-oriented environment overrides to config data."""
+    merged = dict(raw)
+    llm = dict(merged.get("llm") or {})
+    env_map = {
+        "provider": os.getenv("LLM_PROVIDER"),
+        "model": os.getenv("LLM_MODEL"),
+        "base_url": os.getenv("LLM_BASE_URL"),
+        "temperature": os.getenv("LLM_TEMPERATURE"),
+        "max_tokens": os.getenv("LLM_MAX_TOKENS"),
+        "timeout_seconds": os.getenv("LLM_TIMEOUT_SECONDS"),
+    }
+    for key, value in env_map.items():
+        if value not in (None, ""):
+            llm[key] = value
+    if llm:
+        merged["llm"] = llm
+    return merged

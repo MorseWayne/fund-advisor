@@ -1,4 +1,4 @@
-# 基金ETF投资建议系统 - 配置文件
+# 全球股市投资日报系统 - 配置文件
 
 # ---------------------------------------------------------------------------
 # 数据采集配置
@@ -17,13 +17,42 @@ data:
       cache_ttl_minutes: 10       # 全市场行情缓存时间
 
     yfinance:
+      enabled: false
+      rate_limit_seconds: 0.5
+
+  # 全球市场数据：多源回退（Stooq → FRED → AKShare 海外 → yfinance 兜底）
+  global_market:
+    providers: [stooq, fred, akshare_global, yfinance]
+    cache_ttl_hours: 6.0          # 当日缓存有效期（历史日期永不过期）
+    stooq:
       enabled: true
+      base_url: https://stooq.com
+      timeout_seconds: 10.0
+      max_concurrency: 4
+    fred:
+      enabled: true
+      api_key_env: FRED_API_KEY   # 在 .env 中设置 FRED_API_KEY
+      base_url: https://api.stlouisfed.org
+      timeout_seconds: 10.0
+    akshare_global:
+      enabled: true
+      rate_limit_seconds: 1.0
+    yfinance:
+      enabled: true               # 末位兜底 — 在 stooq/akshare_global 失效时覆盖 ETF/全球指数
       rate_limit_seconds: 0.5
 
   # 存储配置
   storage:
     type: sqlite
     path: data/fund_advisor.db    # SQLite数据库文件路径
+
+  # 恢恢量化 A 股情绪面增强 (zero-config, 每日 20:00 更新)
+  # 提供赚钱效应指数 / 连板天梯 / 热门题材 / 焦点新闻 — 非实时
+  # 数据源 hhxg.top 是聚合站,无 SLA;失败时上述字段为空,不影响主流程
+  hhxg:
+    enabled: true
+    base_url: https://hhxg.top/static/data
+    timeout_seconds: 15.0
 
 # ---------------------------------------------------------------------------
 # 分析引擎配置
@@ -54,13 +83,6 @@ analysis:
 # LLM配置
 # ---------------------------------------------------------------------------
 llm:
-  provider: deepseek             # deepseek / openai / ollama
-  model: deepseek-chat
-  api_key_env: DEEPSEEK_API_KEY  # 从环境变量读取
-  base_url: https://api.deepseek.com/v1
-  temperature: 0.7
-  max_tokens: 2048
-
   # 日报生成
   report:
     max_length_chars: 800        # 日报最大长度(字符)

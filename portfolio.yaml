@@ -48,6 +48,14 @@ holdings:
     shares: 30
     category: "overseas"
 
+  - code: "518880"
+    name: "黄金ETF"
+    market: "a_share"
+    cost_basis: 5.85
+    shares: 1000
+    category: "commodity"
+    notes: "华安黄金ETF，跟踪Au99.99"
+
   - code: "511880"
     name: "银华日利ETF"
     market: "a_share"

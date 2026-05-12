@@ -2,7 +2,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -19,6 +19,7 @@ class HoldingCategory(str, Enum):
     THEME = "theme"
     OVERSEAS = "overseas"
     BOND = "bond"
+    COMMODITY = "commodity"
 
 
 class SignalDirection(str, Enum):
@@ -136,6 +137,15 @@ class DailyMarketSnapshot:
     macro: dict[str, float] = field(default_factory=dict)
     news_headlines: list[str] = field(default_factory=list)
     valuation: dict[str, float] = field(default_factory=dict)
+    precious_metals: dict[str, Any] = field(default_factory=dict)
+    qdii_premiums: list[dict[str, Any]] = field(default_factory=list)
+    liquidity: dict[str, float] = field(default_factory=dict)
+    margin: dict[str, Any] = field(default_factory=dict)
+    hsgt_flows: list[dict[str, Any]] = field(default_factory=list)
+    sentiment: dict[str, Any] = field(default_factory=dict)
+    ladder: dict[str, Any] = field(default_factory=dict)
+    hot_themes: list[dict[str, Any]] = field(default_factory=list)
+    focus_news: list[dict[str, Any]] = field(default_factory=list)
     validation_errors: list[str] = field(default_factory=list)
     validation_warnings: list[str] = field(default_factory=list)
 

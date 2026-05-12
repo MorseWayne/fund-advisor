@@ -1,218 +1,177 @@
 # Fund-Advisor
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![uv](https://img.shields.io/badge/uv-包管理-8A2BE2)](https://github.com/astral-sh/uv)
 
-> 个人基金/ETF 智能投顾系统 — A股 + 全球市场，自动化数据采集、量化分析、LLM日报生成、多渠道推送、Web看板。
+个人基金/ETF 智能投顾报告系统。它面向个人投资组合，自动采集 A 股和全球市场数据，写入本地 SQLite，运行趋势、轮动、估值、风险分析，再用兼容 OpenAI Chat Completions 协议的 LLM 生成中文日报、周报或月报，并通过企业微信、飞书或 Streamlit 看板交付。
 
----
+这个项目只生成分析和建议，不做自动下单。
 
-## 系统架构
+## 当前能力
 
-![系统架构图](docs/architecture.png)
+- A 股数据：通过 AKShare 采集 ETF 行情、主要指数、行业排名、资金流、估值、财经新闻。
+- 全球数据：通过 yfinance 采集美股 ETF、全球指数、VIX、USD/CNY、美债收益率。
+- 历史数据：支持 ETF 和指数 OHLCV 回填，用于均线、回撤、相关性等指标。
+- 分析引擎：覆盖趋势、行业轮动、估值温度、异常波动、最大回撤和持仓盈亏。
+- LLM 报告：按日期自动生成日报、周报或月报，输出“概览、方向信号、板块机会、估值温度、风险提醒、你的持仓”六段式中文报告。
+- 报告质量追踪：生成证据包、反方审查、历史上下文和变化摘要，并对结构、数字溯源、绝对化建议、缺失数据披露做确定性校验。
+- 审计与回退：LLM 失败时生成规则报告；每次报告写入 `data/reports/report-audit.jsonl`，记录来源、验证结果、评分和证据哈希。
+- 多渠道交付：支持企业微信、飞书 webhook 推送，以及 Streamlit 本地看板和报告质量面板。
 
-> 交互式架构图（可缩放）: [`docs/architecture.html`](docs/architecture.html)
+## 系统数据流
 
 ```mermaid
-%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#0e4429', 'primaryTextColor': '#3fb950', 'primaryBorderColor': '#238636', 'lineColor': '#8b949e', 'secondaryColor': '#161b22', 'tertiaryColor': '#21262d'}}}%%
-flowchart TB
-    subgraph Presentation["🖥️ 交付层"]
-        direction LR
-        WX["企业微信"]:::deliver
-        FS["飞书"]:::deliver
-        ST["Streamlit"]:::deliver
-    end
-
-    subgraph Intelligence["🧠 LLM层"]
-        RP["DeepSeek<br/>日报生成"]:::llm
-    end
-
-    subgraph Analysis["📊 分析层"]
-        direction LR
-        T["趋势"]:::analysis
-        R["轮动"]:::analysis
-        V["估值"]:::analysis
-        RS["风险"]:::analysis
-    end
-
-    subgraph Storage["💾 存储层"]
-        DB[("SQLite")]:::storage
-    end
-
-    subgraph Collection["📡 采集层"]
-        direction LR
-        AK["AKShare"]:::collect
-        YF["yfinance"]:::collect
-    end
-
-    Collection -->|写入| Storage
-    Storage -->|查询| Analysis
-    Analysis -->|信号| Intelligence
-    Intelligence -->|推送| Presentation
-    Storage -.->|直连| ST
-
-    classDef deliver fill:#051e1e,stroke:#22d3ee,color:#22d3ee
-    classDef llm fill:#052e1e,stroke:#34d399,color:#34d399
-    classDef analysis fill:#052e1e,stroke:#34d399,color:#34d399
-    classDef storage fill:#1e1b4b,stroke:#a78bfa,color:#a78bfa
-    classDef collect fill:#1c1917,stroke:#fbbf24,color:#fbbf24
+flowchart LR
+  A[AKShare / yfinance] --> B[DataPipeline]
+  B --> C[(SQLite)]
+  C --> D[AnalysisEngine]
+  D --> H[ReportEvidence + 历史审计上下文]
+  H --> E[LLM / 规则回退报告]
+  E --> I[Verifier + Evaluator]
+  I --> J[(report-audit.jsonl)]
+  I --> F[企业微信 / 飞书]
+  C --> G[Streamlit 看板]
+  J --> G
 ```
 
----
-
-## 功能特性
-
-### 数据采集 (Data Layer)
-- **A股数据** — 通过 AKShare 采集 2000+ ETF 实时行情、5大指数、行业排名、北向资金、主力资金、PE/PB 估值、财经新闻
-- **全球数据** — 通过 yfinance 采集 10 大 US ETF、全球指数、VIX、USD/CNY、美债收益率
-- **宏观数据** — 中国10年国债收益率、CPI、GDP、PMI（Phase 1 新增）
-- **历史回填** — `BackfillPipeline` 支持增量历史数据下载，A股 `stock_zh_a_hist` + 全球 `Ticker.history(5y)`
-- **数据验证** — 价格非负检查、涨跌幅边界验证、时间新鲜度检测，坏数据标记但不阻断
-- **重试机制** — 指数退避重试（1s/2s/4s + jitter），429/503 自动恢复
-
-### 量化分析 (Analysis Engine)
-- **趋势分析** — MA 多头排列/空头排列/交叉震荡检测、站立线比率、VIX 情绪评分
-- **行业轮动** — 1月/3月/6月加权动量排名、资金流向分析、美林时钟经济周期映射
-- **估值判断** — PE 历史分位、股债利差、ETF 溢价/折价预警
-- **风险监控** — 异常波动检测(>3%)、最大回撤、相关性矩阵
-- **历史数据驱动** — 分析引擎自动从 SQLite 查询历史价格序列，MA/回撤/相关性指标基于真实历史数据计算
-
-### LLM 日报生成
-- **6段式结构** — 今日概览 → 方向信号 → 板块机会 → 估值温度 → 风险提醒 → 持仓建议
-- **结构化输出** — 即将支持 Pydantic 模型验证的 JSON 输出（Phase 2 规划）
-- **回退机制** — LLM 失败时自动切换规则引擎生成确定性报告
-- **成本控制** — DeepSeek API 单次成本约 ¥0.002
-
-### 推送与看板
-- **企业微信** — Webhook 推送日报和预警
-- **飞书** — Webhook 推送日报和预警
-- **Streamlit 看板** — 5页实时仪表盘：ETF排行榜、行业热力图、持仓收益、日报回顾、手动触发
-- **定时调度** — APScheduler：交易日15:30自动采集+生成+推送，盘中每5分钟异常监控
-
----
+详细架构图见 [docs/architecture.html](docs/architecture.html)。
 
 ## 快速开始
 
 ### 1. 安装依赖
 
 ```bash
-git clone <repo-url> && cd fund-advisor
+git clone <repo-url>
+cd fund-advisor
 uv sync
 ```
 
-### 2. 配置环境变量
+### 2. 配置 `.env`
+
+复制示例文件并填入本地密钥：
 
 ```bash
-export DEEPSEEK_API_KEY=sk-xxx           # LLM日报生成(必填)
-export WECHAT_WORK_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx  # 可选
-export FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx               # 可选
+cp .env.example .env
 ```
 
-### 3. 初始化历史数据（推荐）
+LLM 的 provider、model、base URL、API key、temperature、max tokens 和 timeout 都在 `.env` 里配置。`.env` 会在 `load_config()` 时自动加载，且不会覆盖系统里已经导出的环境变量。
+
+### 3. 配置持仓
+
+编辑 [portfolio.yaml](portfolio.yaml)，填入你的 ETF 代码、成本价、份额和类别。
+
+### 4. 初始化历史数据
+
+第一次使用建议先回填历史数据：
 
 ```bash
 uv run python -c "
-from src.data.pipeline import BackfillPipeline
+from src.config import load_config
 from src.data.collectors.akshare_collector import AKShareCollector
 from src.data.collectors.yfinance_collector import YFinanceCollector
+from src.data.pipeline import BackfillPipeline
 from src.data.storage import MarketDB
-from src.config import AppConfig
 
-cfg = AppConfig.load('config/config.yaml')
-db = MarketDB(cfg.data.db_path)
-ak = AKShareCollector()
-yf = YFinanceCollector()
-bp = BackfillPipeline(ak, yf, db, cfg)
-bp.run_backfill(days=365)
-print('历史数据回填完成')
+cfg = load_config()
+db = MarketDB(cfg.data.storage.path)
+bp = BackfillPipeline(AKShareCollector(), YFinanceCollector(), db, cfg)
+print(bp.run_backfill(days=365))
 "
 ```
 
-### 4. 运行
+### 5. 运行
 
-**一次性完整流程：**
 ```bash
+# 跑一次完整流程：采集 -> 分析 -> 报告 -> 输出；已启用 webhook 时会推送
 uv run python main.py once
-```
 
-**定时调度（后台运行）：**
-```bash
+# 启动定时任务
 uv run python main.py scheduler
-```
 
-**Web 看板：**
-```bash
+# 启动 Web 看板
 uv run streamlit run app.py
 ```
 
----
+运行一次完整流程后，系统会同步写入报告审计日志。Streamlit 看板的“日报回顾”和“手动触发”页会展示最近评分、验证通过率、阻断项、缺失数据和报告正文。
 
-## 配置详解
+## LLM Provider 配置
 
-### `config/config.yaml`
+LLM 客户端调用标准路径：
 
-```yaml
-# 数据层配置
-data:
-  db_path: "data/fund_advisor.db"
-  sources:
-    akshare:
-      enabled: true
-      rate_limit_seconds: 1.0
-    yfinance:
-      enabled: true
-      rate_limit_seconds: 0.5
-
-# 分析引擎配置
-analysis:
-  trend:
-    ma_periods: [5, 20, 60]           # 短期/中期/长期均线
-    standing_line_threshold: 0.5       # 站立线阈值
-  rotation:
-    momentum_windows: [21, 63, 126]    # 1月/3月/6月动量窗口
-  valuation:
-    pe_percentile_low: 30              # PE分位低估线
-    pe_percentile_high: 70             # PE分位高估线
-  risk:
-    anomaly_threshold: 0.03            # 异常波动阈值(3%)
-    max_drawdown_warning: 0.15         # 回撤预警阈值(15%)
-    correlation_warning: 0.8           # 相关性预警阈值(0.8)
-
-# LLM配置
-llm:
-  provider: deepseek                   # deepseek / openai / ollama
-  model: deepseek-chat
-  base_url: "https://api.deepseek.com/v1"
-  temperature: 0.7
-  max_tokens: 2048
-
-# 推送配置
-notify:
-  wechat_work:
-    enabled: false
-    webhook_url_env: WECHAT_WORK_WEBHOOK_URL
-  feishu:
-    enabled: false
-    webhook_url_env: FEISHU_WEBHOOK_URL
-
-# 调度配置
-scheduler:
-  timezone: "Asia/Shanghai"
-  jobs:
-    daily_collection:
-      cron: "30 15 * * mon-fri"        # 交易日 15:30
-    intraday_monitor:
-      interval_minutes: 5              # 盘中每5分钟
-      market_hours: "09:30-15:00"
-
-# 日志配置
-logging:
-  level: INFO
-  file: "data/logs/fund_advisor.log"
+```text
+{base_url}/chat/completions
 ```
 
-### `portfolio.yaml` — 持仓管理
+只要供应商兼容 OpenAI Chat Completions 协议，就可以通过 `.env` 接入。`config/config.yaml` 只保留报告长度、语气等业务配置。
+
+报告周期由 `select_report_period()` 自动选择：月末生成月报，周末生成周报，其余交易日生成日报。无论 LLM 是否可用，`ReportGenerator` 都会返回可审计的报告结果；旧接口 `generate_daily_report()` 仍返回纯文本，新接口 `generate_daily_report_bundle()` 会额外返回证据、校验、评分、历史上下文和变化摘要。
+
+### OpenAI
+
+```dotenv
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=sk-xxx
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=4096
+LLM_TIMEOUT_SECONDS=180
+```
+
+### SiliconFlow
+
+```dotenv
+LLM_PROVIDER=siliconflow
+LLM_MODEL=Qwen/Qwen3-32B
+LLM_BASE_URL=https://api.siliconflow.cn/v1
+LLM_API_KEY=sk-xxx
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=4096
+LLM_TIMEOUT_SECONDS=180
+```
+
+### Moonshot
+
+```dotenv
+LLM_PROVIDER=moonshot
+LLM_MODEL=moonshot-v1-8k
+LLM_BASE_URL=https://api.moonshot.cn/v1
+LLM_API_KEY=sk-xxx
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=4096
+LLM_TIMEOUT_SECONDS=180
+```
+
+### 本地 OpenAI-compatible 服务
+
+```dotenv
+LLM_PROVIDER=local
+LLM_MODEL=qwen2.5:7b
+LLM_BASE_URL=http://localhost:8000/v1
+LLM_API_KEY=local
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=4096
+LLM_TIMEOUT_SECONDS=180
+```
+
+## 报告质量与历史追踪
+
+报告生成链路在 `src/reporting/` 中实现，目标是让 LLM 输出可追溯、可复核、可持续改进：
+
+| 模块 | 作用 |
+| --- | --- |
+| `evidence.py` | 将分析结果压缩成证据包，包含可引用指标、章节写作 brief、缺失数据、风险标记和反方审查。 |
+| `verifier.py` | 校验六段式结构、数据日期、缺失数据披露、百分比数字是否来自证据包，以及是否出现绝对化投资表述。 |
+| `evaluation.py` | 按结构、证据、数字溯源、风险处理、缺失数据和行动安全打分，输出 A-D 等级。 |
+| `audit.py` | 将报告、证据哈希、验证结果、评分、风险和缺失数据追加到 `data/reports/report-audit.jsonl`。 |
+| `change.py` | 与上一期同周期报告对比，追踪站线比例、PE 分位数、组合收益、最大回撤和风险变化。 |
+
+当前追踪的质量问题包括：缺少结构项、章节正文过短、未展示数据日期、缺失数据未披露、证据包未支持的百分比数字，以及“稳赚/必涨/保证收益/无风险/满仓买入”等绝对化建议。
+
+## 持仓配置
+
+[portfolio.yaml](portfolio.yaml) 的基本格式：
 
 ```yaml
 holdings:
@@ -223,158 +182,124 @@ holdings:
     shares: 5000
     category: "broad"
 
-  - code: "588000"
-    name: "科创50ETF"
-    market: "a_share"
-    cost_basis: 1.02
-    shares: 10000
-    category: "broad"
-
-  - code: "513100"
-    name: "纳斯达克ETF"
-    market: "us"
-    cost_basis: 5.2
-    shares: 2000
-    category: "overseas"
-
   - code: "QQQ"
-    name: "纳指100"
+    name: "纳指100ETF"
     market: "us"
     cost_basis: 420.0
     shares: 50
     category: "overseas"
-
-  - code: "511880"
-    name: "银华日利"
-    market: "a_share"
-    cost_basis: 100.0
-    shares: 1000
-    category: "bond"
-
-categories:
-  broad: "宽基指数"
-  sector: "行业指数"
-  theme: "主题指数"
-  overseas: "海外指数"
-  bond: "债券/货币"
 ```
 
----
+字段说明：
 
-## 技术指标说明
+| 字段 | 含义 |
+| --- | --- |
+| `code` | ETF 或指数代码 |
+| `name` | 展示名称 |
+| `market` | `a_share`、`us` 或 `hk` |
+| `cost_basis` | 持仓成本价 |
+| `shares` | 持有份额 |
+| `category` | `broad`、`sector`、`theme`、`overseas`、`bond` |
 
-### 趋势指标
-
-| 指标 | 计算方法 | 用途 |
-|------|---------|------|
-| **MA排列** | SMA(5) vs SMA(20) vs SMA(60) | 判断短期/中期/长期趋势方向 |
-| **站立线比率** | 上涨ETF数量 / 总ETF数量 | 市场广度指标，判断上涨普遍性 |
-| **情绪评分** | VIX线性映射(15-25) ± 涨跌比调整 | 恐慌/贪婪/中性三态判断 |
-
-### 轮动指标
-
-| 指标 | 计算方法 | 用途 |
-|------|---------|------|
-| **动量排名** | 0.2×1月 + 0.3×3月 + 0.5×6月收益率 | 找出相对强势板块 |
-| **资金流向** | 北向资金 + 主力资金总和 | 判断大资金进出方向 |
-| **经济周期** | CPI + GDP → 美林时钟四象限 | 宏观配置参考 |
-
-### 估值指标
-
-| 指标 | 计算方法 | 用途 |
-|------|---------|------|
-| **PE分位** | 当前PE在历史PE中的排名百分位 | 判断市场整体贵贱 |
-| **股债利差** | 1/PE - 10年国债收益率 | 股权风险溢价，越大越值得买 |
-| **ETF溢价** | (净值-市价)/净值 | 套利和交易风险预警 |
-
-### 风险指标
-
-| 指标 | 计算方法 | 阈值 | 用途 |
-|------|---------|------|------|
-| **异常波动** | 单日涨跌幅绝对值 | >3% | 捕捉突发事件 |
-| **最大回撤** | (峰值-当前)/峰值 | >15% | 趋势下行预警 |
-| **平均相关性** | ETF间Pearson相关系数均值 | >0.8 | 分散化失效预警 |
-
----
-
-## 数据模型
-
-### SQLite 表结构 (11张表)
-
-| 表名 | 数据 | 用途 |
-|------|------|------|
-| `etf_daily` | 2000+ A股ETF 日行情 | 实时排名、波动检测 |
-| `index_daily` | 5大A股指数 + 全球指数 | 趋势判断、概览 |
-| `sector_daily` | 行业板块排名 | 轮动分析 |
-| `fund_flow_daily` | 北向资金 + 主力资金 | 资金流向 |
-| `news_daily` | 财经新闻标题 | 消息面参考 |
-| `macro_daily` | VIX/美债/汇率/中国宏观 | 估值和周期判断 |
-| `etf_history` | ETF 历史 OHLCV | MA/回撤计算 *(Phase 1 新增)* |
-| `index_history` | 指数历史 OHLCV | 趋势分析 *(Phase 1 新增)* |
-| `valuation_daily` | PE/PB 历史序列 | 分位计算 |
-| `reports` | LLM 生成的日报 | 历史回顾 |
-| `alerts` | 风险预警记录 | 预警追踪 |
-
----
-
-## 部署架构
-
-```mermaid
-flowchart LR
-    subgraph Local["本地部署"]
-        L1["电脑/笔记本<br/>uv run main.py scheduler"]
-    end
-
-    subgraph Cloud["云服务器部署"]
-        C1["阿里云/腾讯云 2核2G<br/>~¥50/月"]
-        C2["nohup + systemd service"]
-        C3["nginx reverse proxy<br/>Streamlit"]
-    end
-
-    subgraph Edge["边缘设备部署"]
-        E1["树莓派/软路由<br/>24h运行"]
-    end
-
-    subgraph Notification["推送通道"]
-        N1["企业微信"]
-        N2["飞书"]
-    end
-
-    Local --> N1
-    Local --> N2
-    Cloud --> N1
-    Cloud --> N2
-    Edge --> N1
-    Edge --> N2
-```
-
-### 云服务器部署（推荐）
+## 常用命令
 
 ```bash
-# 1. 上传代码
-scp -r fund-advisor/ user@server:~/
-ssh user@server
+# 安装或同步依赖
+uv sync
 
-# 2. 安装依赖
-cd fund-advisor && uv sync
+# 运行测试
+uv run --extra dev pytest -q
 
-# 3. 配置环境变量
-export DEEPSEEK_API_KEY=sk-xxx
-export WECHAT_WORK_WEBHOOK_URL=...
+# 语法检查
+uv run python -m compileall -q src main.py app.py tests
 
-# 4. 初始化历史数据
-uv run python -c "from src.data.pipeline import BackfillPipeline; ...; bp.run_backfill(365)"
+# 运行一次报告流程
+uv run python main.py once
 
-# 5. 启动调度（后台）
+# 启动调度
+uv run python main.py scheduler
+
+# 启动看板
+uv run streamlit run app.py
+```
+
+## 配置文件
+
+核心配置在 [config/config.yaml](config/config.yaml)：
+
+```yaml
+data:
+  storage:
+    type: sqlite
+    path: data/fund_advisor.db
+
+analysis:
+  trend:
+    ma_periods: [5, 20, 60]
+    standing_line_threshold: 0.5
+  risk:
+    anomaly_threshold: 0.03
+    max_drawdown_warning: 0.15
+    correlation_warning: 0.8
+
+notify:
+  wechat_work:
+    enabled: false
+    webhook_url_env: WECHAT_WORK_WEBHOOK_URL
+  feishu:
+    enabled: false
+    webhook_url_env: FEISHU_WEBHOOK_URL
+
+llm:
+  report:
+    max_length_chars: 800
+    tone: "专业简洁"
+```
+
+推送通道默认关闭。开启后需要在 `.env` 中设置对应 webhook 变量：
+
+```bash
+WECHAT_WORK_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+```
+
+## 项目结构
+
+```text
+fund-advisor/
+├── main.py                    # CLI 入口：once / scheduler
+├── app.py                     # Streamlit 看板
+├── config/config.yaml         # 系统配置
+├── portfolio.yaml             # 持仓配置
+├── src/
+│   ├── config.py              # Pydantic 配置模型
+│   ├── data/
+│   │   ├── pipeline.py        # DataPipeline / BackfillPipeline
+│   │   ├── storage.py         # SQLite 存储
+│   │   ├── portfolio.py       # 持仓读取
+│   │   ├── validation.py      # 数据质量校验
+│   │   └── collectors/        # AKShare / yfinance / retry
+│   ├── analysis/              # 趋势、轮动、估值、风险
+│   ├── llm/                   # OpenAI-compatible 客户端、报告周期和报告生成
+│   ├── notify/                # 企业微信、飞书推送
+│   ├── reporting/             # 证据包、校验、评分、审计、变化摘要
+│   ├── scheduler/             # APScheduler 任务
+│   └── utils/                 # 日志和工具函数
+├── tests/                     # 自动化测试和报告质量回归用例
+└── docs/                      # 架构图和设计文档
+```
+
+## 部署建议
+
+### 本机或服务器后台运行
+
+```bash
+mkdir -p data/logs
 nohup uv run python main.py scheduler > data/logs/scheduler.log 2>&1 &
-
-# 6. 启动Web看板（可选，配合nginx）
 nohup uv run streamlit run app.py --server.port 8501 > data/logs/streamlit.log 2>&1 &
 ```
 
-### systemd 服务配置
-
-创建 `/etc/systemd/system/fund-advisor.service`:
+### systemd 示例
 
 ```ini
 [Unit]
@@ -388,7 +313,12 @@ WorkingDirectory=/home/ubuntu/fund-advisor
 ExecStart=/usr/local/bin/uv run python main.py scheduler
 Restart=always
 RestartSec=10
-Environment=DEEPSEEK_API_KEY=sk-xxx
+Environment=LLM_PROVIDER=openai
+Environment=LLM_MODEL=gpt-4o-mini
+Environment=LLM_BASE_URL=https://api.openai.com/v1
+Environment=LLM_API_KEY=sk-xxx
+Environment=LLM_TEMPERATURE=0.7
+Environment=LLM_MAX_TOKENS=4096
 Environment=WECHAT_WORK_WEBHOOK_URL=https://...
 
 [Install]
@@ -401,159 +331,27 @@ sudo systemctl start fund-advisor
 sudo systemctl status fund-advisor
 ```
 
----
+## 当前限制
 
-## 项目结构
+- 依赖 AKShare 和 yfinance，外部数据源的可用性、字段变化和限流会影响采集结果。
+- 系统只做分析和建议，不自动交易，不保证收益。
+- LLM 报告只基于采集和分析结果生成；数据缺失或 LLM 失败时会降级为规则报告，并在报告和审计日志中留下质量提示。
+- 质量校验能发现结构、数字溯源和绝对化表述问题，但不代表投资结论一定正确。
+- 第一次运行前建议做历史回填，否则部分均线、回撤、相关性指标会缺少样本。
 
-```
-fund-advisor/
-├── main.py                              # 入口: once | scheduler | backfill
-├── app.py                               # Streamlit Web看板 (5页)
-├── pyproject.toml                       # uv 依赖 + 构建配置
-├── uv.lock                              # 锁定依赖版本
-│
-├── config/
-│   └── config.yaml                      # 系统配置
-├── portfolio.yaml                       # 持仓配置
-├── data/                                # SQLite + 日志
-│   └── fund_advisor.db                  # 主数据库 (11表, WAL模式)
-│
-├── docs/
-│   ├── architecture.html                # 交互式架构图 (SVG)
-│   └── superpowers/specs/               # 设计文档
-│
-└── src/
-    ├── config.py                        # Pydantic 配置模型
-    │
-    ├── data/                            # 数据层
-    │   ├── models.py                    # 17个dataclass + Pydantic验证模型
-    │   ├── storage.py                   # SQLite存储 (11表, executemany批量写入)
-    │   ├── portfolio.py                 # YAML持仓读取
-    │   ├── pipeline.py                  # DataPipeline + BackfillPipeline
-    │   ├── validation.py                # 数据验证层 *(Phase 1 新增)*
-    │   └── collectors/
-    │       ├── retry.py                 # 指数退避重试 *(Phase 1 新增)*
-    │       ├── akshare_collector.py     # A股数据采集 (12个端点)
-    │       └── yfinance_collector.py    # 全球数据采集 (async化)
-    │
-    ├── analysis/                        # 分析层
-    │   ├── trend.py                     # 趋势: MA/站立线/情绪
-    │   ├── rotation.py                  # 轮动: 动量/资金/周期
-    │   ├── valuation.py                 # 估值: PE分位/股债利差
-    │   ├── risk.py                      # 风险: 波动/回撤/相关性
-    │   └── engine.py                    # 分析编排 (MarketDB注入)
-    │
-    ├── llm/                             # LLM层
-    │   ├── client.py                    # DeepSeek API (httpx + 重试)
-    │   ├── prompts.py                   # 6段式日报提示词模板
-    │   └── report_generator.py          # 日报生成器 (结构化输出 + 回退)
-    │
-    ├── notify/                          # 推送层
-    │   └── channels.py                  # 企业微信 + 飞书 Webhook
-    │
-    ├── scheduler/                       # 调度层
-    │   └── jobs.py                      # APScheduler: 日终 + 盘中监控
-    │
-    └── utils/                           # 工具层
-        ├── helpers.py                   # safe_float, safe_int, today_str
-        └── logging_config.py            # loguru 配置
-```
+## 路线图
 
----
-
-## 开发指南
-
-### 添加新的数据采集源
-
-```python
-# src/data/collectors/my_collector.py
-from src.data.collectors.retry import retry_with_backoff
-
-class MyCollector:
-    @retry_with_backoff(max_retries=3)
-    async def fetch_data(self):
-        # 实现采集逻辑
-        pass
-```
-
-### 添加新的分析指标
-
-```python
-# src/analysis/my_indicator.py
-def calc_my_indicator(data: list[dict]) -> dict:
-    """返回 {"value": float, "signal": str, "confidence": float}"""
-    pass
-
-# 在 engine.py 中注册
-# self._analyze_my_indicator(snapshot)
-```
-
-### 运行测试
-
-```bash
-# 验证所有模块导入
-uv run python -c "from src.data.pipeline import DataPipeline; from src.analysis.engine import AnalysisEngine; print('OK')"
-
-# 验证数据管道
-uv run python -c "
-from src.data.pipeline import DataPipeline
-from src.config import AppConfig
-cfg = AppConfig.load('config/config.yaml')
-pipe = DataPipeline(cfg)
-# pipe.run_daily_collection()  # 需要网络
-"
-```
-
----
-
-## 优化路线图
-
-### Phase 1: 基础修复 ✅
-- [x] 历史数据回填 (`BackfillPipeline` + `etf_history`/`index_history` 表)
-- [x] 指数退避重试 (`retry_with_backoff`, 3次, jitter)
-- [x] 数据验证层 (`validate_snapshot`, Pydantic 模型)
-- [x] 宏观数据采集 (CN10Y, CPI, GDP, PMI)
-- [x] 批量存储 (`executemany`, batch_size=500)
-- [x] 分析引擎接入历史 (`MarketDB` 注入)
-
-### Phase 2: 结构化 LLM (规划中)
-- [ ] Pydantic 结构化输出 (`call_llm` wrapper)
-- [ ] 金融意图检测路由器 (零LLM成本预过滤)
-- [ ] 组合约束强制 (确定性计算最大买卖量)
-
-### Phase 3: 高级量化指标 (规划中)
-- [ ] 5策略集成技术分析 (趋势+均值回归+动量+波动率+统计套利)
-- [ ] 多方法估值 (Owner Earnings + DCF + EV/EBITDA + Residual Income)
-- [ ] 波动率模块 (历史波动率百分位)
-
-### Phase 4: 多智能体 (规划中)
-- [ ] Bull/Bear 交替辩论共识
-- [ ] 信号集成器 (加权投票)
-- [ ] 回测引擎 (向量化, 保证金支持)
-
-### Phase 5: 仪表盘升级 (规划中)
-- [ ] 风险面板 (异常/回撤/相关性预警)
-- [ ] 日期范围选择器
-- [ ] 关联热力图
-- [ ] ETF 对比模式
-
----
-
-## 开源借鉴
-
-本项目深入分析并借鉴了以下优秀开源项目的设计模式:
-
-| 项目 | Stars | 借鉴内容 | 协议 |
-|------|:-----:|---------|:----:|
-| [FinClaw](https://github.com/Fin-Chelae/FinClaw) | 新兴 | AKShare/yfinance采集器模式、推送通道架构、限流设计 | MIT |
-| [TradingAgents-CN](https://github.com/hsliuping/TradingAgents-CN) | 13K | A股市场适配、LangGraph多智能体辩论、ChromaDB记忆 | Apache 2.0 |
-| [AI Hedge Fund](https://github.com/virattt/ai-hedge-fund) | 42K | Pydantic结构化输出、5策略技术分析、DCF估值、回测引擎 | MIT |
-
----
+- 结构化 LLM 输出：用 Pydantic 校验日报 JSON，再渲染为文本。
+- 更完整的风险面板：异常波动、回撤、相关性、持仓集中度和报告质量趋势联动。
+- 更丰富的组合约束：仓位上限、定投规则、止盈止损提示。
+- 回测能力：验证信号对历史组合的影响。
+- 多智能体分析：引入正反观点辩论和信号集成。
 
 ## 设计文档
 
-详细设计见 [`docs/superpowers/specs/2026-05-09-fund-etf-advisory-system-design.md`](docs/superpowers/specs/2026-05-09-fund-etf-advisory-system-design.md)
+- [系统设计文档](docs/superpowers/specs/2026-05-09-fund-etf-advisory-system-design.md)
+- [交互式架构图](docs/architecture.html)
+- [金融 AI 生态参考](docs/fin-ai-ecosystem/README.md)
 
 ## License
 
