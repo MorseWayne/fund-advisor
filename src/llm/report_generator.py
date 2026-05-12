@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -172,7 +173,16 @@ class ReportGenerator:
                 json_mode=True,
             )
 
-            structured = StructuredReport.model_validate(json_response)
+            try:
+                structured = StructuredReport.model_validate(json_response)
+            except Exception as validation_exc:
+                logger.error(
+                    "Structured {} validation failed: top_keys={} sample={}",
+                    label,
+                    sorted(json_response.keys()) if isinstance(json_response, dict) else type(json_response).__name__,
+                    _truncate_json(json_response),
+                )
+                raise validation_exc
             report_text = render_structured_report(structured)
 
             bundle = self._finalize_report_bundle(
@@ -454,3 +464,17 @@ def _format_percent(value: object) -> str:
     if abs(number) <= 1:
         number *= 100
     return f"{number:.2f}%"
+
+
+def _truncate_json(payload: object, limit: int = 400) -> str:
+    """Compact JSON dump truncated to ``limit`` chars for diagnostic logs.
+
+    Surfaces what the LLM actually returned when StructuredReport validation
+    fails — usually you can see at a glance whether the root object is a
+    KeyMetric, a sections-only fragment, or a partial dict.
+    """
+    try:
+        text = json.dumps(payload, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        text = repr(payload)
+    return text if len(text) <= limit else text[:limit] + f"... (+{len(text) - limit} chars)"
