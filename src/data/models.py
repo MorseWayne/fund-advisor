@@ -142,6 +142,10 @@ class DailyMarketSnapshot:
     liquidity: dict[str, float] = field(default_factory=dict)
     margin: dict[str, Any] = field(default_factory=dict)
     hsgt_flows: list[dict[str, Any]] = field(default_factory=list)
+    sentiment: dict[str, Any] = field(default_factory=dict)
+    ladder: dict[str, Any] = field(default_factory=dict)
+    hot_themes: list[dict[str, Any]] = field(default_factory=list)
+    focus_news: list[dict[str, Any]] = field(default_factory=list)
     validation_errors: list[str] = field(default_factory=list)
     validation_warnings: list[str] = field(default_factory=list)
 

@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from src.config import AppConfig, load_config
 from src.data.collectors.akshare_collector import AKShareCollector
 from src.data.collectors.cache import ProviderCache
+from src.data.collectors.hhxg_collector import HhxgCollector
 from src.data.collectors.providers.akshare_global import AKShareGlobalProvider
 from src.data.collectors.providers.base import GlobalMarketProvider, Quote, quote_to_dict
 from src.data.collectors.providers.chained import ChainedProvider
@@ -63,6 +64,14 @@ def _normalize_etf_record(raw_record: Any) -> dict[str, Any] | None:
     record = _normalize_market_record(raw_record)
     if record is None:
         return None
+    # Drop ETFs without a usable price — typically newly-listed funds whose
+    # quote feed hasn't published a print yet, or suspended ones. They have
+    # no analysis value and break Pydantic validation downstream.
+    price = record.get("price")
+    if price is None or not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+        return None
+    if record.get("change_pct") is None:
+        record["change_pct"] = 0.0
     for field in ("volume", "amount"):
         if record.get(field) is None:
             record[field] = 0.0
@@ -80,6 +89,14 @@ class DataPipeline:
         )
         self.db = MarketDB(self.config.data.storage.path)
         self.akshare = AKShareCollector()
+        self.hhxg: HhxgCollector | None = (
+            HhxgCollector(
+                base_url=self.config.data.hhxg.base_url,
+                timeout_seconds=self.config.data.hhxg.timeout_seconds,
+            )
+            if self.config.data.hhxg.enabled
+            else None
+        )
         self.global_market = self._build_global_market_provider()
 
     def _build_global_market_provider(self) -> ChainedProvider:
@@ -143,22 +160,57 @@ class DataPipeline:
         indices = _safe_dict(index_result, "indices", [])
         sectors = _safe_dict(sector_result, "sectors", [])
         fund_flows = _safe_dict(flow_result, "flows", {}) if not isinstance(flow_result, Exception) else {}
-        valuation = _safe_dict(val_result, "data", [])
+        # fetch_valuation_data returns a single-index dict {index_code, pe_ratio, ...},
+        # not a {"data": [...]} wrapper. Pass it through as a dict and let the
+        # downstream snapshot builder coerce it to list[dict].
+        if isinstance(val_result, Exception):
+            logger.error("valuation fetch failed: {}", val_result)
+            valuation: Any = {}
+        else:
+            valuation = val_result if isinstance(val_result, dict) else {}
         news = _safe_dict(news_result, "news", [])
+
+        sentiment, ladder, hot_themes, focus_news = await self._collect_hhxg()
 
         return {
             "etfs": etfs if isinstance(etfs, list) else [],
             "indices": indices if isinstance(indices, list) else [],
             "sectors": sectors if isinstance(sectors, list) else [],
             "fund_flows": fund_flows if isinstance(fund_flows, dict) else {},
-            "valuation": valuation if isinstance(valuation, list) else [],
+            "valuation": valuation,
             "news": news if isinstance(news, list) else [],
             "precious_metals": _safe_dict(pm_result, "precious_metals", {}) if isinstance(pm_result, dict) else {},
             "qdii_premiums": _safe_dict(qdii_result, "qdii_premiums", []) if isinstance(qdii_result, dict) else [],
             "liquidity": _safe_dict(liquidity_result, "liquidity", {}) if isinstance(liquidity_result, dict) else {},
             "margin": _safe_dict(margin_result, "margin_balance") if isinstance(margin_result, dict) else {},
             "hsgt_flows": _safe_dict(hsgt_result, "recent_flows", []) if isinstance(hsgt_result, dict) else [],
+            "sentiment": sentiment,
+            "ladder": ladder,
+            "hot_themes": hot_themes,
+            "focus_news": focus_news,
         }
+
+    async def _collect_hhxg(
+        self,
+    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Best-effort hhxg.top sentiment fetch. Returns empty containers on any failure."""
+        if self.hhxg is None:
+            return {}, {}, [], []
+        results = await asyncio.gather(
+            self.hhxg.fetch_sentiment(),
+            self.hhxg.fetch_ladder(),
+            self.hhxg.fetch_hot_themes(),
+            self.hhxg.fetch_focus_news(),
+            return_exceptions=True,
+        )
+        sentiment = results[0] if isinstance(results[0], dict) else {}
+        ladder = results[1] if isinstance(results[1], dict) else {}
+        hot_themes = results[2] if isinstance(results[2], list) else []
+        focus_news = results[3] if isinstance(results[3], list) else []
+        for idx, label in enumerate(("sentiment", "ladder", "hot_themes", "focus_news")):
+            if isinstance(results[idx], Exception):
+                logger.warning("hhxg {} fetch failed: {}", label, results[idx])
+        return sentiment, ladder, hot_themes, focus_news
 
     async def collect_global_data(self) -> dict[str, Any]:
         logger.info("Collecting global market data via chained providers...")
@@ -189,14 +241,7 @@ class DataPipeline:
                 "All global market providers failed or disabled — downstream global data is empty"
             )
 
-        sources_used = {
-            q.source
-            for bucket in grouped.values()
-            for q in bucket
-            if q.source
-        }
-        if sources_used:
-            logger.info(f"Global data providers used: {sorted(sources_used)}")
+        # Per-provider/per-asset-type breakdown is already logged by ChainedProvider._log_summary.
 
         macro: dict[str, float] = {}
         if isinstance(vix_data, dict) and vix_data.get("price") is not None:
@@ -248,6 +293,7 @@ class DataPipeline:
     async def run_daily_collection(self, target_date: Optional[str] = None) -> DailyMarketSnapshot:
         today = target_date or date.today().strftime("%Y-%m-%d")
         logger.info(f"Starting daily data collection for {today}")
+        started_at = time.monotonic()
 
         a_share_data, global_data = await asyncio.gather(
             self.collect_a_share_data(),
@@ -356,6 +402,10 @@ class DataPipeline:
             liquidity=a_share_data.get("liquidity", {}),
             margin=a_share_data.get("margin", {}),
             hsgt_flows=a_share_data.get("hsgt_flows", []),
+            sentiment=a_share_data.get("sentiment", {}),
+            ladder=a_share_data.get("ladder", {}),
+            hot_themes=a_share_data.get("hot_themes", []),
+            focus_news=a_share_data.get("focus_news", []),
         )
 
         validation = validate_snapshot(snapshot)
@@ -366,9 +416,90 @@ class DataPipeline:
         if validation.warnings:
             logger.warning(f"Snapshot validation warnings: {validation.warnings}")
 
-        logger.info(f"Daily collection complete: {len(etf_models)} ETFs, {len(index_models)} indices, "
-                     f"{len(sector_models)} sectors, {len(headlines)} news")
+        elapsed = time.monotonic() - started_at
+        self._log_daily_summary(
+            today,
+            elapsed,
+            validation_ok=validation.success,
+            a_share=a_share_data,
+            global_data=global_data,
+            etf_count=len(etf_models),
+            index_count=len(index_models),
+            sector_count=len(sector_models),
+            news_count=len(headlines),
+        )
         return snapshot
+
+    @staticmethod
+    def _log_daily_summary(
+        today: str,
+        elapsed: float,
+        *,
+        validation_ok: bool,
+        a_share: dict[str, Any],
+        global_data: dict[str, Any],
+        etf_count: int,
+        index_count: int,
+        sector_count: int,
+        news_count: int,
+    ) -> None:
+        fund_flows = a_share.get("fund_flows") or {}
+        liquidity = a_share.get("liquidity") or {}
+        margin = a_share.get("margin") or {}
+        macro = global_data.get("macro") or {}
+        us_etfs = global_data.get("us_etfs") or []
+        global_indices = global_data.get("global_indices") or []
+        sentiment = a_share.get("sentiment") or {}
+        ladder = a_share.get("ladder") or {}
+        hot_themes = a_share.get("hot_themes") or []
+        focus_news = a_share.get("focus_news") or []
+        valuation = a_share.get("valuation") or {}
+        if isinstance(valuation, dict):
+            valuation_ok = bool(valuation.get("pe_ratio") or valuation.get("pb_ratio"))
+        else:
+            valuation_ok = bool(valuation)
+
+        # ChainedProvider already logs per-asset-type / per-provider detail.
+        # This is the cross-source roll-up so a single log line answers
+        # "did today's collection look right?".
+        lines = [
+            f"=== Daily collection summary {today} ===",
+            f"Elapsed: {elapsed:.1f}s  Validation: {'OK' if validation_ok else 'FAIL'}",
+            "[A-share]",
+            f"  etfs={etf_count}  indices={index_count}  sectors={sector_count}  news={news_count}",
+            f"  fund_flows={'y' if fund_flows else 'n'}"
+            f"  valuation={'y' if valuation_ok else 'n'}"
+            f"  precious_metals={len(a_share.get('precious_metals') or {})}"
+            f"  qdii={len(a_share.get('qdii_premiums') or [])}"
+            f"  liquidity={'y' if liquidity else 'n'}"
+            f"  margin={'y' if margin else 'n'}"
+            f"  hsgt={len(a_share.get('hsgt_flows') or [])}",
+            "[Global]",
+            f"  us_etfs={len(us_etfs)}  global_indices={len(global_indices)}",
+            f"  macro_fields={len(macro)} ({', '.join(sorted(macro)[:8])}"
+            f"{'…' if len(macro) > 8 else ''})",
+        ]
+
+        if sentiment or ladder or hot_themes or focus_news:
+            si = sentiment.get("sentiment_index")
+            si_label = sentiment.get("sentiment_label") or "?"
+            lu = sentiment.get("limit_up")
+            fr = sentiment.get("fried")
+            ld = sentiment.get("limit_down")
+            max_streak = ladder.get("max_streak")
+            lines.append("[hhxg]")
+            lines.append(
+                "  sentiment_index="
+                + (f"{si}({si_label})" if si is not None else "—")
+                + f"  limit_up={lu if lu is not None else '—'}"
+                + f"  fried={fr if fr is not None else '—'}"
+                + f"  limit_down={ld if ld is not None else '—'}"
+            )
+            lines.append(
+                f"  max_streak={max_streak if max_streak is not None else '—'}"
+                f"  themes={len(hot_themes)}  focus_news={len(focus_news)}"
+            )
+        logger.info("\n".join(lines))
 
     def calc_holding_status(self, snapshot: DailyMarketSnapshot) -> PortfolioStatus:
         holdings = load_portfolio()

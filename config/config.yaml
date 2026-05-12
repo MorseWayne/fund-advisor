@@ -38,13 +38,21 @@ data:
       enabled: true
       rate_limit_seconds: 1.0
     yfinance:
-      enabled: false              # 仅作末位兜底，默认关闭
+      enabled: true               # 末位兜底 — 在 stooq/akshare_global 失效时覆盖 ETF/全球指数
       rate_limit_seconds: 0.5
 
   # 存储配置
   storage:
     type: sqlite
     path: data/fund_advisor.db    # SQLite数据库文件路径
+
+  # 恢恢量化 A 股情绪面增强 (zero-config, 每日 20:00 更新)
+  # 提供赚钱效应指数 / 连板天梯 / 热门题材 / 焦点新闻 — 非实时
+  # 数据源 hhxg.top 是聚合站,无 SLA;失败时上述字段为空,不影响主流程
+  hhxg:
+    enabled: true
+    base_url: https://hhxg.top/static/data
+    timeout_seconds: 15.0
 
 # ---------------------------------------------------------------------------
 # 分析引擎配置

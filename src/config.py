@@ -34,7 +34,7 @@ class AKShareGlobalProviderConfig(BaseModel):
 
 
 class YFinanceProviderConfig(BaseModel):
-    enabled: bool = False
+    enabled: bool = True
     rate_limit_seconds: float = 0.5
 
 
@@ -45,6 +45,12 @@ class GlobalMarketConfig(BaseModel):
     fred: FREDProviderConfig = FREDProviderConfig()
     akshare_global: AKShareGlobalProviderConfig = AKShareGlobalProviderConfig()
     yfinance: YFinanceProviderConfig = YFinanceProviderConfig()
+
+
+class HhxgConfig(BaseModel):
+    enabled: bool = True
+    base_url: str = "https://hhxg.top/static/data"
+    timeout_seconds: float = 15.0
 
 
 class StorageConfig(BaseModel):
@@ -131,6 +137,7 @@ class DataConfig(BaseModel):
     sources: dict[str, DataSourceConfig] = {}
     storage: StorageConfig = StorageConfig()
     global_market: GlobalMarketConfig = GlobalMarketConfig()
+    hhxg: HhxgConfig = HhxgConfig()
 
 
 class AppConfig(BaseModel):

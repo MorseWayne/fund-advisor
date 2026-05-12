@@ -33,6 +33,10 @@ if TYPE_CHECKING:
     pass
 
 
+class StooqUpstreamGatedError(RuntimeError):
+    """Stooq is rate-gating us behind a captcha/apikey; not retryable here."""
+
+
 class StooqProvider:
     name: str = "stooq"
 
@@ -57,6 +61,18 @@ class StooqProvider:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             tasks = [self._fetch_one(client, s) for s in servable]
             results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        gated = any(isinstance(r, StooqUpstreamGatedError) for r in results)
+        if gated:
+            # Stooq gated the whole batch (free CSV requires a captcha-obtained
+            # apikey since 2026). Log once and let ChainedProvider fall back —
+            # don't spam per-symbol warnings.
+            logger.warning(
+                "stooq upstream is gating CSV downloads (captcha/apikey required); "
+                "skipping {} symbols, falling back to next provider",
+                len(servable),
+            )
+            return {}
 
         out: dict[str, Quote] = {}
         for symbol, result in zip(servable, results):
@@ -85,9 +101,25 @@ class StooqProvider:
 
     @staticmethod
     def _parse_csv(text: str, symbol: str) -> Quote | None:
-        if not text or text.strip().lower().startswith("no data"):
+        if not text:
             return None
-        reader = csv.DictReader(StringIO(text))
+        stripped = text.strip()
+        lowered = stripped.lower()
+        if lowered.startswith("no data"):
+            return None
+        # Stooq started gating CSV downloads behind a captcha-obtained apikey
+        # in 2026. Responses contain a "get your apikey" hint with HTTP 200.
+        # Raise so ChainedProvider falls back instead of silently dropping the
+        # symbol as "not covered".
+        if "get your apikey" in lowered or "get_apikey" in lowered:
+            raise StooqUpstreamGatedError(
+                f"stooq requires an apikey for {symbol} (upstream gating); "
+                "fall back to another provider"
+            )
+        # Stooq occasionally returns HTML error pages with 200 status.
+        if stripped.startswith("<"):
+            raise RuntimeError(f"stooq returned non-CSV payload for {symbol}")
+        reader = csv.DictReader(StringIO(stripped))
         rows = [row for row in reader if row.get("Date") and row.get("Close")]
         if not rows:
             return None
@@ -130,4 +162,4 @@ def _to_float(value: object) -> float | None:
         return None
 
 
-__all__ = ["StooqProvider"]
+__all__ = ["StooqProvider", "StooqUpstreamGatedError"]

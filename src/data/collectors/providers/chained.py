@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date as date_cls
 from typing import Sequence
 
@@ -16,6 +17,14 @@ from src.data.collectors.providers.base import (
 from src.data.collectors.providers.symbol_map import (
     ASSET_TYPE_BY_SYMBOL,
     all_symbols,
+)
+
+_ASSET_TYPE_ORDER: tuple[AssetType, ...] = (
+    "us_etf",
+    "global_index",
+    "volatility_index",
+    "forex",
+    "treasury_yield",
 )
 
 
@@ -46,6 +55,7 @@ class ChainedProvider:
         cache_key_date = trade_date or date_cls.today().isoformat()
 
         quotes: dict[str, Quote] = {}
+        cache_hits = 0
         pending = list(universe)
 
         if self.cache is not None:
@@ -54,6 +64,7 @@ class ChainedProvider:
                     break
                 hits = self.cache.get_batch(provider.name, pending, cache_key_date)
                 quotes.update(hits)
+                cache_hits += len(hits)
                 pending = [s for s in pending if s not in hits]
 
         for provider in self.providers:
@@ -100,7 +111,39 @@ class ChainedProvider:
                 continue
             asset_type = ASSET_TYPE_BY_SYMBOL.get(symbol, quote.asset_type)
             grouped[asset_type].append(quote)
+
+        self._log_summary(universe, grouped, cache_hits, pending)
         return grouped
+
+    def _log_summary(
+        self,
+        universe: list[str],
+        grouped: dict[AssetType, list[Quote]],
+        cache_hits: int,
+        uncovered: list[str],
+    ) -> None:
+        total_requested: Counter[AssetType] = Counter(
+            ASSET_TYPE_BY_SYMBOL[s] for s in universe if s in ASSET_TYPE_BY_SYMBOL
+        )
+        lines: list[str] = [
+            f"[ChainedProvider] summary  cache_hits={cache_hits}/{len(universe)}"
+        ]
+        for asset_type in _ASSET_TYPE_ORDER:
+            quotes = grouped.get(asset_type, [])
+            total = total_requested.get(asset_type, 0)
+            if total == 0 and not quotes:
+                continue
+            source_counts = Counter(q.source for q in quotes if q.source)
+            sources = (
+                "  ".join(f"{src}:{n}" for src, n in source_counts.most_common())
+                or "—"
+            )
+            lines.append(
+                f"  {asset_type:<16} {len(quotes)}/{total}  {sources}"
+            )
+        if uncovered:
+            lines.append(f"  uncovered ({len(uncovered)}): {uncovered}")
+        logger.info("\n".join(lines))
 
 
 __all__ = ["ChainedProvider"]
