@@ -232,15 +232,18 @@ class LLMClient:
 
     @staticmethod
     def _extract_content(response_json: dict[str, object]) -> str:
-        """Pull text out of an OpenAI-compatible chat completion response.
+        """Pull the answer text out of an OpenAI-compatible chat completion.
 
-        Standard path: ``choices[0].message.content``. For reasoning models
-        (DeepSeek-R1, QwQ, deepseek-v*-pro, ...) some gateways route the
-        answer to ``reasoning_content`` and leave ``content`` empty; we fall
-        back to that, then to ``reasoning``. If everything is empty we raise
-        a ValueError carrying a one-line snapshot of the response (finish
-        reason, usage, present keys) so the log immediately shows whether
-        the model was truncated, refused, or simply mis-routed.
+        Reads ``choices[0].message.content`` only. ``reasoning_content`` and
+        ``reasoning`` are *not* fallback sources — those carry the model's
+        internal chain-of-thought (DeepSeek-R1 / o1-style), not the answer.
+        Treating reasoning as the answer was a bug that surfaced when the
+        gateway truncated the actual response: we'd serve the model's
+        Chinese-language thinking back to JSON parsing and fail.
+
+        Raises ValueError with a one-line response snapshot when content is
+        missing — the caller (e.g. ``generate_json``) can decide whether to
+        retry, fall back, or surface to the user.
         """
         choices_obj = response_json.get("choices")
         if not isinstance(choices_obj, list) or not choices_obj:
@@ -254,17 +257,9 @@ class LLMClient:
         if not isinstance(message, Mapping):
             raise ValueError(f"LLM response message is malformed: {_response_snapshot(response_json)}")
         message_map = cast(Mapping[str, object], message)
-
-        for field in ("content", "reasoning_content", "reasoning"):
-            value = message_map.get(field)
-            if isinstance(value, str) and value.strip():
-                if field != "content":
-                    logger.warning(
-                        "LLM content empty, falling back to '{}' field "
-                        "(reasoning model output not merged by gateway)",
-                        field,
-                    )
-                return value.strip()
+        content = message_map.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
 
         raise ValueError(
             f"LLM response content is empty: {_response_snapshot(response_json)}"

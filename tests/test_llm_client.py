@@ -113,27 +113,30 @@ def test_extract_content_normal_path():
     assert text == "hello world"
 
 
-def test_extract_content_falls_back_to_reasoning_content(caplog):
-    """Reasoning models (DeepSeek-R1, QwQ, ...) sometimes leave content empty
-    and route output to reasoning_content. We must not error out in that case."""
-    text = LLMClient._extract_content(
-        {
-            "choices": [
-                {
-                    "message": {"content": "", "reasoning_content": "the answer is 42"},
-                    "finish_reason": "stop",
-                }
-            ]
-        }
-    )
-    assert text == "the answer is 42"
+def test_extract_content_ignores_reasoning_content():
+    """reasoning_content carries chain-of-thought, not the answer.
 
-
-def test_extract_content_falls_back_to_reasoning_field():
-    text = LLMClient._extract_content(
-        {"choices": [{"message": {"content": None, "reasoning": "fallback text"}}]}
-    )
-    assert text == "fallback text"
+    Returning it would serve the model's internal thinking to JSON parsing,
+    which then fails because the thinking is narrative prose not a JSON
+    object. The only defensible signal is: content empty => ValueError.
+    """
+    with pytest.raises(ValueError) as exc_info:
+        LLMClient._extract_content(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "reasoning_content": "我们被要求生成一个JSON对象，格式基于...",
+                        },
+                        "finish_reason": "length",
+                    }
+                ]
+            }
+        )
+    msg = str(exc_info.value)
+    assert "empty" in msg
+    assert "finish_reason=length" in msg
 
 
 def test_extract_content_empty_raises_with_snapshot():
@@ -142,7 +145,7 @@ def test_extract_content_empty_raises_with_snapshot():
             {
                 "choices": [
                     {
-                        "message": {"content": "", "reasoning_content": "   "},
+                        "message": {"content": ""},
                         "finish_reason": "length",
                     }
                 ],
