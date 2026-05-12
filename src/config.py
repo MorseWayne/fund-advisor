@@ -96,8 +96,8 @@ class LLMConfig(BaseModel):
     model: str = "gpt-4o-mini"
     base_url: str = "https://api.openai.com/v1"
     temperature: float = 0.7
-    max_tokens: int = 4096
-    timeout_seconds: float = 180.0
+    max_tokens: int = 32000
+    timeout_seconds: float = 600.0
     report: LLMReportConfig = LLMReportConfig()
 
 

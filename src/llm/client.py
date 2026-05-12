@@ -29,8 +29,8 @@ class LLMClient:
         api_key: str | None = None,
         base_url: str = "https://api.openai.com/v1",
         temperature: float = 0.7,
-        max_tokens: int = 4096,
-        timeout_seconds: float = 180.0,
+        max_tokens: int = 32000,
+        timeout_seconds: float = 600.0,
     ) -> None:
         self.provider: str = provider
         self.model: str = model
@@ -50,8 +50,8 @@ class LLMClient:
             api_key=api_key,
             base_url=str(getattr(config, "base_url", "https://api.openai.com/v1")),
             temperature=float(getattr(config, "temperature", 0.7)),
-            max_tokens=int(getattr(config, "max_tokens", 4096)),
-            timeout_seconds=float(getattr(config, "timeout_seconds", 180.0)),
+            max_tokens=int(getattr(config, "max_tokens", 32000)),
+            timeout_seconds=float(getattr(config, "timeout_seconds", 600.0)),
         )
 
     async def generate(
