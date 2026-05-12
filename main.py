@@ -172,14 +172,17 @@ async def run_scheduled():
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Fund-Advisor - 基金ETF投资建议系统")
-    parser.add_argument("command", nargs="?", default="once", choices=["once", "scheduler"],
-                        help="once: single run, scheduler: start scheduler")
+    parser.add_argument("command", nargs="?", default="once", choices=["once", "scheduler", "server"],
+                        help="once: single run, scheduler: start scheduler, server: start API server")
     args = parser.parse_args()
 
     if args.command == "once":
         asyncio.run(run_once())
     elif args.command == "scheduler":
         asyncio.run(run_scheduled())
+    elif args.command == "server":
+        from src.api.main import run_server
+        run_server()
 
 
 if __name__ == "__main__":

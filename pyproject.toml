@@ -19,8 +19,8 @@ dependencies = [
     "ta>=0.11.0",
     "pandas-datareader>=0.10.0",
     "lark-oapi>=1.4.0",
-    "streamlit>=1.57.0",
-    "plotly>=6.7.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
 ]
 
 [project.optional-dependencies]

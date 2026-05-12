@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fund-Advisor - 个人基金ETF投资建议系统</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+</head>
+<body class="bg-gray-50 dark:bg-gray-900">
+    
+    <!-- Header -->
+    <nav class="fixed top-0 z-50 w-full bg-white border-b border-gray-200 dark:bg-gray-800 dark:border-gray-700">
+        <div class="px-3 py-3 lg:px-5 lg:pl-3">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center justify-start">
+                    <button data-drawer-target="logo-sidebar" data-drawer-toggle="logo-sidebar" aria-controls="logo-sidebar" type="button" class="inline-flex items-center p-2 text-sm text-gray-500 rounded-lg sm:hidden hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:text-gray-400 dark:hover:bg-gray-700 dark:focus:ring-gray-600">
+                        <span class="sr-only">Open sidebar</span>
+                        <svg class="w-6 h-6" aria-hidden="true" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                            <path clip-rule="evenodd" fill-rule="evenodd" d="M2 4.75A.75.75 0 012.75 4h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 4.75zm0 10.5a.75.75 0 01.75-.75h7.5a.75.75 0 010 1.5h-7.5a.75.75 0 01-.75-.75zM2 10a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 10z"></path>
+                        </svg>
+                    </button>
+                    <a href="#" class="flex ml-2 md:mr-24">
+                        <span class="self-center text-xl font-semibold sm:text-2xl whitespace-nowrap dark:text-white">Fund-Advisor</span>
+                    </a>
+                </div>
+                <div class="flex items-center">
+                    <div id="latest-date" class="text-sm text-gray-500 dark:text-gray-400 mr-4">最新数据日期: --</div>
+                    <button id="trigger-btn" type="button" class="text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 font-medium rounded-lg text-sm px-5 py-2.5 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800">
+                        立即分析
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Sidebar -->
+    <aside id="logo-sidebar" class="fixed top-0 left-0 z-40 w-64 h-screen pt-20 transition-transform -translate-x-full bg-white border-r border-gray-200 sm:translate-x-0 dark:bg-gray-800 dark:border-gray-700" aria-label="Sidebar">
+        <div class="h-full px-3 pb-4 overflow-y-auto bg-white dark:bg-gray-800">
+            <ul class="space-y-2 font-medium">
+                <li>
+                    <a href="#" data-page="overview" class="flex items-center p-2 text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group active-nav">
+                        <svg class="w-5 h-5 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 22 21">
+                            <path d="M16.975 11H10V4.025a1 1 0 0 0-1.066-.998 8.5 8.5 0 1 0 9.039 9.039.999.999 0 0 0-1-1.066h.002Z"/>
+                            <path d="M12.5 0c-.157 0-.311.01-.565.027A1 1 0 0 0 11 1.02V10h8.975a1 1 0 0 0 1-.935c.013-.188.028-.374.028-.565A8.51 8.51 0 0 0 12.5 0Z"/>
+                        </svg>
+                        <span class="ml-3">今日概览</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#" data-page="rankings" class="flex items-center p-2 text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                        <svg class="flex-shrink-0 w-5 h-5 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 18 18">
+                            <path d="M6.143 0H1.857A1.857 1.857 0 0 0 0 1.857v4.286C0 7.169.831 8 1.857 8h4.286A1.857 1.857 0 0 0 8 6.143V1.857A1.857 1.857 0 0 0 6.143 0Zm10 0h-4.286A1.857 1.857 0 0 0 10 1.857v4.286C10 7.169 10.831 8 11.857 8h4.286A1.857 1.857 0 0 0 18 6.143V1.857A1.857 1.857 0 0 0 16.143 0Zm-10 10H1.857A1.857 1.857 0 0 0 0 11.857v4.286C0 17.169.831 18 1.857 18h4.286A1.857 1.857 0 0 0 8 16.143v-4.286A1.857 1.857 0 0 0 6.143 10Zm10 0h-4.286A1.857 1.857 0 0 0 10 11.857v4.286c0 1.026.831 1.857 1.857 1.857h4.286A1.857 1.857 0 0 0 18 16.143v-4.286A1.857 1.857 0 0 0 16.143 10Z"/>
+                        </svg>
+                        <span class="flex-1 ml-3 whitespace-nowrap">ETF 排行榜</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#" data-page="heatmap" class="flex items-center p-2 text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                        <svg class="flex-shrink-0 w-5 h-5 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 18 20">
+                            <path d="M17 5.923A1 1 0 0 0 16 5h-3V4a4 4 0 1 0-8 0v1H2a1 1 0 0 0-1 .923L.086 17.846A2 2 0 0 0 2.08 20h13.84a2 2 0 0 0 1.994-2.153L17 5.923ZM7 9a1 1 0 0 1-2 0V7h2v2Zm0-5a2 2 0 1 1 4 0v1H7V4Zm6 5a1 1 0 1 1-2 0V7h2v2Z"/>
+                        </svg>
+                        <span class="flex-1 ml-3 whitespace-nowrap">行业热力图</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#" data-page="portfolio" class="flex items-center p-2 text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                        <svg class="flex-shrink-0 w-5 h-5 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="m17.418 3.623-.018-.008a6.713 6.713 0 0 0-2.4-.569V2h1a1 1 0 1 0 0-2h-2a1 1 0 0 0-1 1v2H9.89V2a1 1 0 0 0-1-1h-2a1 1 0 0 0 0 2h1v.056c-1.1.108-2.125.517-3 1.15V2h1a1 1 0 1 0 0-2h-2a1 1 0 0 0-1 1v2h1.1c-.319.435-.583.912-.787 1.418L.068 18.108a1 1 0 0 0 .807 1.36c.734.105 1.472.157 2.212.155a50.713 50.713 0 0 0 15.826-2.516 1 1 0 0 0 .6-1.558c-.322-.455-.614-.93-.873-1.424ZM6.347 18.06c-1.341 0-2.673-.04-4-.119l1.173-4.41c1.144 1.49 2.518 2.81 4.105 3.93l-.278.599Zm7.846-5.467a50.6 50.6 0 0 1-3.64-1.874l.024-.038a1.231 1.231 0 1 1 1.957 1.472l.142.062a1 1 0 1 0 .61-1.9l-.142-.062a1.23 1.23 0 0 1-1.957-1.472l.024-.038a50.6 50.6 0 0 1 3.64 1.874l.024.038a1.231 1.231 0 0 1-1.957 1.472l.142.062a1 1 0 1 0 .61-1.9l-.142-.062a1.23 1.23 0 0 1 1.957-1.472l.024.038a50.6 50.6 0 0 1 3.64 1.874l.024.038a1.23 1.23 0 1 1-1.957 1.472l.142.062a1 1 0 1 0 .61-1.9l-.142-.062a1.23 1.23 0 0 1 1.957-1.472l.024.038a50.6 50.6 0 0 1 3.64 1.874l.024.038a1.231 1.231 0 0 1-1.957 1.472l.142.062a1 1 0 1 0 .61-1.9l-.142-.062a1.231 1.231 0 0 1 1.957-1.472l.024.038a50.6 50.6 0 0 1 3.64 1.874l.024.038a1.231 1.231 0 0 1-1.957 1.472l.142.062a1 1 0 1 0 .61-1.9l-.142-.062a1.231 1.231 0 0 1 1.957-1.472l.024.038a50.6 50.6 0 0 1 3.64 1.874l.024.038a1.23 1.23 0 1 1-1.957 1.472l.142.062a1 1 0 1 0 .61-1.9l-.142-.062a1.23 1.23 0 0 1 1.957-1.472l.024.038a50.6 50.6 0 0 1 3.64 1.874l.024.038a1.23 1.23 0 0 1-1.957 1.472l.142.062a1 1 0 1 0 .61-1.9l-.142-.062a1.23 1.23 0 0 1 1.957-1.472l.024.038a50.6 50.6 0 0 1 3.64 1.874l.024.038a1.231 1.231 0 0 1-1.957 1.472l.142.062a1 1 0 1 0 .61-1.9l-.142-.062a1.23 1.23 0 0 1 1.957-1.472l.024.038a50.6 50.6 0 0 1 3.64 1.874l.024.038a1.23 1.23 0 1 1-1.957 1.472l.142.062a1 1 0 1 0 .61-1.9l-.142-.062a1.23 1.23 0 0 1 1.957-1.472l.024.038Z"/>
+                        </svg>
+                        <span class="flex-1 ml-3 whitespace-nowrap">持仓收益</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#" data-page="risk" class="flex items-center p-2 text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                        <svg class="flex-shrink-0 w-5 h-5 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M10 .5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 10 .5ZM9.5 4a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3ZM12 15H8a1 1 0 0 1 0-2h1v-3H8a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1v4h1a1 1 0 0 1 0 2Z"/>
+                        </svg>
+                        <span class="flex-1 ml-3 whitespace-nowrap">风险天梯</span>
+                    </a>
+                </li>
+            </ul>
+        </div>
+    </aside>
+
+    <!-- Content Area -->
+    <div class="p-4 sm:ml-64 pt-20">
+        <div id="page-content">
+            <!-- Content will be injected here -->
+        </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+</body>
+</html>
