@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 from collections.abc import Mapping
 from typing import cast
 
@@ -31,6 +32,7 @@ class LLMClient:
         temperature: float = 0.7,
         max_tokens: int = 32000,
         timeout_seconds: float = 600.0,
+        stream: bool = True,
     ) -> None:
         self.provider: str = provider
         self.model: str = model
@@ -39,6 +41,7 @@ class LLMClient:
         self.temperature: float = temperature
         self.max_tokens: int = max_tokens
         self.timeout_seconds: float = timeout_seconds
+        self.stream: bool = stream
 
     @classmethod
     def from_config(cls, config: object, *, api_key: str | None = None) -> "LLMClient":
@@ -52,6 +55,7 @@ class LLMClient:
             temperature=float(getattr(config, "temperature", 0.7)),
             max_tokens=int(getattr(config, "max_tokens", 32000)),
             timeout_seconds=float(getattr(config, "timeout_seconds", 600.0)),
+            stream=bool(getattr(config, "stream", True)),
         )
 
     async def generate(
@@ -85,6 +89,7 @@ class LLMClient:
             system_prompt=system_prompt,
             temperature=temperature,
             max_tokens=max_tokens,
+            stream=self.stream,
         )
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -103,13 +108,15 @@ class LLMClient:
                         attempt,
                         max_attempts,
                     )
-                    response = await client.post(endpoint, headers=headers, json=payload)
-                    if response.status_code in self.RETRY_STATUS_CODES:
-                        await self._retry_or_raise(response, attempt, max_attempts)
-                        continue
-
-                    _ = response.raise_for_status()
-                    response_json = cast(dict[str, object], response.json())
+                    if self.stream:
+                        response_json = await self._stream_request(client, endpoint, headers, payload)
+                    else:
+                        response = await client.post(endpoint, headers=headers, json=payload)
+                        if response.status_code in self.RETRY_STATUS_CODES:
+                            await self._retry_or_raise(response, attempt, max_attempts)
+                            continue
+                        _ = response.raise_for_status()
+                        response_json = cast(dict[str, object], response.json())
                     content = self._extract_content(response_json)
                     logger.info("LLM generation completed, chars={}", len(content))
                     return content
@@ -178,6 +185,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         json_mode: bool = False,
+        stream: bool = False,
     ) -> dict[str, object]:
         messages: list[dict[str, str]] = []
         if system_prompt:
@@ -192,7 +200,120 @@ class LLMClient:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if stream:
+            payload["stream"] = True
+            # Most OpenAI-compatible gateways honor this; harmless when unsupported.
+            payload["stream_options"] = {"include_usage": True}
         return payload
+
+    async def _stream_request(
+        self,
+        client: httpx.AsyncClient,
+        endpoint: str,
+        headers: dict[str, str],
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """POST a streaming chat completion and assemble a non-streaming-shaped response.
+
+        Returns a dict in the same shape as a non-streaming completion:
+        ``{"choices": [{"message": {"content": ..., "reasoning_content": ...},
+        "finish_reason": ...}], "usage": ...}``. This lets the rest of the
+        client (``_extract_content``, ``_response_snapshot``) stay agnostic
+        to whether the call was streamed.
+
+        While streaming, every delta is printed to stderr unbuffered so the
+        user sees the model's chain-of-thought and final answer in real time.
+        ``[llm-think]`` prefixes reasoning_content, ``[llm-content]`` prefixes
+        the actual answer; the prefix is re-emitted whenever the stream
+        switches between the two so it's clear which buffer is filling.
+        """
+        content_buf: list[str] = []
+        reasoning_buf: list[str] = []
+        finish_reason: object = None
+        usage: object = None
+        last_emitted: str | None = None
+
+        def _emit(label: str, text: str) -> None:
+            nonlocal last_emitted
+            if not text:
+                return
+            if last_emitted != label:
+                if last_emitted is not None:
+                    print(file=sys.stderr, flush=True)
+                print(f"[{label}] ", end="", file=sys.stderr, flush=True)
+                last_emitted = label
+            print(text, end="", file=sys.stderr, flush=True)
+
+        async with client.stream("POST", endpoint, headers=headers, json=payload) as response:
+            if response.status_code in self.RETRY_STATUS_CODES:
+                # Reify a fully-buffered response so the existing retry/raise
+                # path can read .text/.headers like in the non-streaming case.
+                body = await response.aread()
+                fake = httpx.Response(
+                    response.status_code,
+                    headers=response.headers,
+                    content=body,
+                    request=response.request,
+                )
+                raise httpx.HTTPStatusError(
+                    f"{response.status_code} from streaming endpoint",
+                    request=response.request,
+                    response=fake,
+                )
+            response.raise_for_status()
+
+            async for raw_line in response.aiter_lines():
+                if not raw_line or not raw_line.startswith("data:"):
+                    continue
+                data = raw_line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    logger.debug("Skipping malformed SSE chunk: {!r}", data[:120])
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+
+                chunk_usage = chunk.get("usage")
+                if isinstance(chunk_usage, dict):
+                    usage = chunk_usage
+
+                choices = chunk.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    continue
+                first = choices[0]
+                if not isinstance(first, dict):
+                    continue
+
+                delta = first.get("delta") or {}
+                if isinstance(delta, dict):
+                    reasoning_piece = delta.get("reasoning_content")
+                    if isinstance(reasoning_piece, str) and reasoning_piece:
+                        reasoning_buf.append(reasoning_piece)
+                        _emit("llm-think", reasoning_piece)
+                    content_piece = delta.get("content")
+                    if isinstance(content_piece, str) and content_piece:
+                        content_buf.append(content_piece)
+                        _emit("llm-content", content_piece)
+
+                fr = first.get("finish_reason")
+                if fr is not None:
+                    finish_reason = fr
+
+        if last_emitted is not None:
+            print(file=sys.stderr, flush=True)  # terminate the inline stream line
+
+        message: dict[str, object] = {"role": "assistant", "content": "".join(content_buf)}
+        if reasoning_buf:
+            message["reasoning_content"] = "".join(reasoning_buf)
+        result: dict[str, object] = {
+            "choices": [{"message": message, "finish_reason": finish_reason}],
+        }
+        if usage is not None:
+            result["usage"] = usage
+        return result
 
     async def _retry_or_raise(
         self,
@@ -300,6 +421,7 @@ class LLMClient:
             temperature=temperature,
             max_tokens=max_tokens,
             json_mode=json_mode,
+            stream=self.stream,
         )
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -315,13 +437,15 @@ class LLMClient:
                         "Calling LLM (JSON) provider={} model={} attempt={}/{}",
                         self.provider, self.model, attempt, max_attempts,
                     )
-                    response = await client.post(endpoint, headers=headers, json=payload)
-                    if response.status_code in self.RETRY_STATUS_CODES:
-                        await self._retry_or_raise(response, attempt, max_attempts)
-                        continue
-
-                    _ = response.raise_for_status()
-                    response_json = cast(dict[str, object], response.json())
+                    if self.stream:
+                        response_json = await self._stream_request(client, endpoint, headers, payload)
+                    else:
+                        response = await client.post(endpoint, headers=headers, json=payload)
+                        if response.status_code in self.RETRY_STATUS_CODES:
+                            await self._retry_or_raise(response, attempt, max_attempts)
+                            continue
+                        _ = response.raise_for_status()
+                        response_json = cast(dict[str, object], response.json())
                     content = self._extract_content(response_json)
                     parsed = _extract_json(content)
                     logger.info("LLM JSON generation completed, keys={}", len(parsed))

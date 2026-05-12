@@ -99,7 +99,7 @@ async def test_generate_retries_read_timeout(monkeypatch):
     monkeypatch.setattr(client_module.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(client_module.asyncio, "sleep", fake_sleep)
 
-    client = LLMClient(api_key="test-key", base_url="https://llm.example.com/v1", timeout_seconds=123)
+    client = LLMClient(api_key="test-key", base_url="https://llm.example.com/v1", timeout_seconds=123, stream=False)
     result = await client.generate("hello", max_tokens=8)
 
     assert result == "OK"
@@ -177,3 +177,108 @@ def test_response_snapshot_compact_shape():
     assert "finish_reason=stop" in snap
     assert "completion_tokens" in snap
     assert "top_keys=['id']" in snap
+
+
+def _sse_bytes(chunks: list[dict]) -> bytes:
+    """Encode a list of SSE chunks (and a terminating [DONE]) as raw bytes."""
+    lines = [f"data: {client_module.json.dumps(c)}\n\n" for c in chunks]
+    lines.append("data: [DONE]\n\n")
+    return "".join(lines).encode("utf-8")
+
+
+def _install_stream_transport(monkeypatch, body: bytes, status_code: int = 200):
+    """Patch httpx.AsyncClient so the streaming code path reads `body`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            content=body,
+            headers={"content-type": "text/event-stream"},
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs.pop("transport", None)
+            super().__init__(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(client_module.httpx, "AsyncClient", PatchedAsyncClient)
+
+
+@pytest.mark.asyncio
+async def test_stream_assembles_content_chunks(monkeypatch, capsys):
+    body = _sse_bytes([
+        {"choices": [{"delta": {"content": "hello"}}]},
+        {"choices": [{"delta": {"content": " world"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        {"usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}},
+    ])
+    _install_stream_transport(monkeypatch, body)
+    client = LLMClient(api_key="k", base_url="https://x.test/v1")
+    result = await client.generate("hi")
+    assert result == "hello world"
+    err = capsys.readouterr().err
+    assert "[llm-content]" in err
+    assert "hello" in err and "world" in err
+
+
+@pytest.mark.asyncio
+async def test_stream_keeps_reasoning_and_content_separate(monkeypatch, capsys):
+    """reasoning_content goes to the think buffer, content to the answer buffer."""
+    body = _sse_bytes([
+        {"choices": [{"delta": {"reasoning_content": "我先分析"}}]},
+        {"choices": [{"delta": {"reasoning_content": "证据包..."}}]},
+        {"choices": [{"delta": {"content": "{\"date\":"}}]},
+        {"choices": [{"delta": {"content": " \"2026-05-12\"}"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ])
+    _install_stream_transport(monkeypatch, body)
+    client = LLMClient(api_key="k", base_url="https://x.test/v1")
+    result = await client.generate("hi")
+    # _extract_content reads message.content only; reasoning is not the answer.
+    assert result == '{"date": "2026-05-12"}'
+    err = capsys.readouterr().err
+    assert "[llm-think] 我先分析证据包..." in err
+    # New label line after switching streams
+    assert "[llm-content]" in err
+
+
+@pytest.mark.asyncio
+async def test_stream_done_terminator_ends_loop(monkeypatch):
+    body = _sse_bytes([
+        {"choices": [{"delta": {"content": "ok"}}]},
+    ])  # [DONE] auto-appended by _sse_bytes
+    _install_stream_transport(monkeypatch, body)
+    client = LLMClient(api_key="k", base_url="https://x.test/v1")
+    assert await client.generate("hi") == "ok"
+
+
+@pytest.mark.asyncio
+async def test_stream_ignores_malformed_chunks(monkeypatch):
+    """A junk SSE line in the middle must not crash the stream."""
+    pieces = [
+        b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n',
+        b'data: this-is-not-json\n\n',
+        b'data: {"choices":[{"delta":{"content":"b"}}]}\n\n',
+        b'data: [DONE]\n\n',
+    ]
+    _install_stream_transport(monkeypatch, b"".join(pieces))
+    client = LLMClient(api_key="k", base_url="https://x.test/v1")
+    assert await client.generate("hi") == "ab"
+
+
+@pytest.mark.asyncio
+async def test_stream_empty_response_raises_with_snapshot(monkeypatch):
+    """If the model only streams reasoning_content (no answer), error must surface
+    with a useful diagnostic — same contract as non-streaming."""
+    body = _sse_bytes([
+        {"choices": [{"delta": {"reasoning_content": "thinking..."}}]},
+        {"choices": [{"delta": {}, "finish_reason": "length"}]},
+    ])
+    _install_stream_transport(monkeypatch, body)
+    client = LLMClient(api_key="k", base_url="https://x.test/v1")
+    with pytest.raises(LLMClientError) as exc_info:
+        await client.generate("hi")
+    assert "empty" in str(exc_info.value)
+    assert "finish_reason=length" in str(exc_info.value)
