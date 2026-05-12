@@ -37,9 +37,6 @@ from src.reporting import (
 )
 
 
-REPORT_MAX_TOKENS = 1024
-
-
 @dataclass(frozen=True)
 class GeneratedReport:
     """Structured result for observability and UI integrations."""
@@ -108,7 +105,6 @@ class ReportGenerator:
                 user_prompt,
                 system_prompt=system_prompt,
                 temperature=0.7,
-                max_tokens=min(self.llm_client.max_tokens, REPORT_MAX_TOKENS),
             )
             formatted_report = report.strip()
             if not formatted_report:
@@ -169,7 +165,6 @@ class ReportGenerator:
                 user_prompt,
                 system_prompt=system_prompt,
                 temperature=0.3,  # Lower temperature for structured output
-                max_tokens=min(self.llm_client.max_tokens, REPORT_MAX_TOKENS * 3),
                 json_mode=True,
             )
 
